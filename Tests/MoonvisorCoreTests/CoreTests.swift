@@ -49,6 +49,8 @@ final class CoreTests: XCTestCase {
         let list = Snapshots.parse(Data(json.utf8))
         XCTAssertEqual(list.map(\.name), ["Vor Update", "live"])
         XCTAssertEqual(list[0].vmStateSize, "nur Festplatte")
+        XCTAssertTrue(list[1].vmStateSize.hasPrefix("mit Arbeitsspeicher"))
+        XCTAssertEqual(Snapshots.sanitize(" Vor dem Update "), "Vor_dem_Update")
     }
 
     func testParallelsConfigIsRead() throws {

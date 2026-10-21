@@ -110,7 +110,15 @@ public enum VMRunner {
         if config.attachDriversDisc, let drivers = DriverStore.cachedVirtioISO {
             extraDiscs.append(drivers)
         }
-        let command = QEMUCommand(config: config, bundle: bundle, toolchain: toolchain, sockets: sockets, extraDiscs: extraDiscs)
+        var command = QEMUCommand(config: config, bundle: bundle, toolchain: toolchain, sockets: sockets, extraDiscs: extraDiscs)
+        // Ein Schnappschuss mit Arbeitsspeicher wird beim Start geladen. Das Laden in eine laufende VM
+        // (loadvm) bringt QEMU 11 mit HVF zum Absturz, ein frischer Start mit -loadvm dagegen nicht.
+        if let resume = config.resumeSnapshot {
+            command.loadSnapshot = resume
+            config.resumeSnapshot = nil
+            config.autoConfirmCDBoot = false
+            try? bundle.saveConfig(config)
+        }
 
         var swtpm: Process?
         if config.tpmEnabled {

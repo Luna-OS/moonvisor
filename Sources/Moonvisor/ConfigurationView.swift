@@ -315,13 +315,19 @@ struct ConfigurationView: View {
                     snapshotAction { try Snapshots.create(entry.bundle, name: name, toolchain: $0) }
                 }
                 Button("Wiederherstellen") {
-                    if let name = snapshotSelection { snapshotAction { try Snapshots.revert(entry.bundle, name: name, toolchain: $0) } }
+                    if let name = snapshotSelection {
+                        snapshotAction {
+                            if try Snapshots.revert(entry.bundle, name: name, toolchain: $0) {
+                                DispatchQueue.main.async { model.start(entry) }
+                            }
+                        }
+                    }
                 }
                 .disabled(snapshotSelection == nil)
                 Button("Löschen", role: .destructive) {
                     if let name = snapshotSelection { snapshotAction { try Snapshots.delete(entry.bundle, name: name, toolchain: $0) } }
                 }
-                .disabled(snapshotSelection == nil || running)
+                .disabled(snapshotSelection == nil)
             }
         }
     }

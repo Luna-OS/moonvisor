@@ -28,8 +28,8 @@ rm -rf "$ICONSET"
 
 echo "▸ Signiere (ad hoc) …"
 xattr -cr "$APP"
-codesign --force --sign - --options runtime "$APP/Contents/Resources/bin/moonctl"
-codesign --force --sign - --options runtime "$APP"
+codesign --force --sign - "$APP/Contents/Resources/bin/moonctl"
+codesign --force --sign - "$APP"
 codesign --verify --strict "$APP"
 
 echo "▸ Packe …"

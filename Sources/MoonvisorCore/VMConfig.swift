@@ -146,6 +146,8 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
     public var graphics: GraphicsMode = .automatic
     /// Text-Zwischenablage mit dem Gast teilen (benötigt Moonvisor Tools).
     public var sharedClipboard: Bool = true
+    /// Beim nächsten Start diesen Schnappschuss samt Arbeitsspeicher laden.
+    public var resumeSnapshot: String?
 
     public init(
         id: UUID = UUID(),
@@ -171,7 +173,7 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
         case version, id, name, guestOS, notes, createdAt, cpuCount, memoryMB, diskSizeGB, profile
         case networkMode, portForwards, macAddress, soundEnabled, tpmEnabled
         case installMediaPath, installMediaAttached, autoConfirmCDBoot, installMode, attachDriversDisc
-        case startOnOpen, commandAsControl, graphics, sharedClipboard
+        case startOnOpen, commandAsControl, graphics, sharedClipboard, resumeSnapshot
     }
 
     /// Fehlende Felder (ältere Konfigurationen) bekommen ihren Standardwert.
@@ -201,6 +203,7 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
         commandAsControl = try c.decodeIfPresent(Bool.self, forKey: .commandAsControl) ?? false
         graphics = try c.decodeIfPresent(GraphicsMode.self, forKey: .graphics) ?? .automatic
         sharedClipboard = try c.decodeIfPresent(Bool.self, forKey: .sharedClipboard) ?? true
+        resumeSnapshot = try c.decodeIfPresent(String.self, forKey: .resumeSnapshot)
     }
 
     /// Lokal administrierte Unicast-MAC im QEMU-Präfix 52:54:00.

@@ -20,7 +20,7 @@ Moonvisor ist eine Virtualisierungs-App für macOS nach dem Vorbild von Parallel
 | **Moonvisor Tools** | Kleiner Agent im Gast (wie die Parallels Tools): **gemeinsame Zwischenablage** für Text in beide Richtungen und **Auflösung passend zum Fenster**. Wird bei der Express-Installation automatisch eingerichtet, sonst per Doppelklick von der CD „MOONTOOLS“. |
 | **Kontrollcenter** | Alle VMs mit Live-Vorschau, Status und Schnellstart. |
 | **VM-Fenster** | Bildschirm direkt im Fenster, Tastatur positionsgenau (deutsches Layout, AltGr, Funktionstasten), Maus ohne „Einfangen“, Anhalten, Herunterfahren, Neustart, Strg+Alt+Entf. |
-| **Schnappschüsse** | Laufend (inklusive Arbeitsspeicher) oder ausgeschaltet, Wiederherstellen und Löschen. |
+| **Schnappschüsse** | Von laufenden VMs inklusive Arbeitsspeicher (dauert wenige Sekunden) oder von ausgeschalteten. Beim Wiederherstellen setzt Windows genau an der Stelle fort. |
 | **Konfiguration** | CPU, RAM, Festplatte vergrößern und bereinigen, CD/DVD, Netzwerk mit Portweiterleitung (z. B. Remotedesktop), Ton, TPM, Grafikmodus, ⌘ als Strg. |
 | **Parallels-Import** | Übernimmt VMs aus `~/Parallels` (Name, CPU, RAM, Festplatte). Das Original bleibt unangetastet. |
 | **`moonctl`** | Alles auch im Terminal, ähnlich wie `prlctl`. |
@@ -103,6 +103,8 @@ Moonvisor ist jung. Was Parallels kann und Moonvisor (noch) nicht:
 - **Keine 3D-Beschleunigung** (DirectX/Metal). Für Office, Browser und Entwicklung reicht es, für aktuelle Spiele nicht.
 - **Bildschirmauflösung:** Während des Setups 800×600. Danach schaltet Moonvisor automatisch auf virtio-GPU um; die Moonvisor Tools wählen dann die größte Windows-Auflösung, die ins Fenster passt (keine beliebigen Zwischengrößen).
 - **Kein Coherence-Modus** und kein Drag & Drop von Dateien. Die Zwischenablage teilt nur Text. Dateien lassen sich über Netzwerkfreigaben austauschen.
+- **Schnappschüsse mit Arbeitsspeicher** passen nur zur Hardware-Konfiguration, mit der sie erstellt wurden. Nach Änderungen an CPU, RAM, Grafik oder Ton startet die VM aus einem solchen Schnappschuss nicht; Schnappschüsse ausgeschalteter VMs sind davon nicht betroffen.
+- **Ton** nur als Ausgabe, kein Mikrofon.
 - **Netzwerk** als NAT. Der Mac erreicht die VM über Portweiterleitungen (z. B. Remotedesktop auf Port 3389).
 - Windows-Aktivierung erfordert eine eigene Lizenz.
 

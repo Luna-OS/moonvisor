@@ -9,63 +9,113 @@ public struct Snapshot: Hashable, Sendable, Identifiable {
 
 /// Schnappschüsse liegen direkt in der qcow2-Festplatte (interne Snapshots).
 public enum Snapshots {
-    public static func list(_ bundle: VMBundle, toolchain: Toolchain) throws -> [Snapshot] {
-        let result = try ProcessRunner.run(toolchain.qemuImg, ["info", "-U", "--output=json", bundle.diskURL.path])
-        guard result.status == 0 else { throw MoonError.processFailed("qemu-img", result.output) }
-        return parse(Data(result.output.utf8))
+    /// Interne Schnappschüsse liegen in der Festplatte und in den UEFI-Variablen (beide qcow2).
+    static func images(_ bundle: VMBundle) -> [URL] {
+        [bundle.diskURL, bundle.efiVarsURL].filter { FileManager.default.fileExists(atPath: $0.path) }
     }
 
-    /// Liest die Snapshot-Liste aus `qemu-img info --output=json`.
-    static func parse(_ json: Data) -> [Snapshot] {
-        guard let info = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
-              let list = info["snapshots"] as? [[String: Any]] else { return [] }
-        return list.map { item in
+    static func info(_ image: URL, toolchain: Toolchain) throws -> [[String: Any]] {
+        let result = try ProcessRunner.run(toolchain.qemuImg, ["info", "-U", "--output=json", image.path])
+        guard result.status == 0 else { throw MoonError.processFailed("qemu-img", result.output) }
+        let object = try? JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any]
+        return object?["snapshots"] as? [[String: Any]] ?? []
+    }
+
+    public static func list(_ bundle: VMBundle, toolchain: Toolchain) throws -> [Snapshot] {
+        let disk = try info(bundle.diskURL, toolchain: toolchain)
+        var stateSizes: [String: Int64] = [:]
+        for image in images(bundle) {
+            for item in try info(image, toolchain: toolchain) {
+                guard let name = item["name"] as? String else { continue }
+                stateSizes[name] = max(stateSizes[name] ?? 0, (item["vm-state-size"] as? NSNumber)?.int64Value ?? 0)
+            }
+        }
+        return merge(disk: disk, stateSizes: stateSizes)
+    }
+
+    static func merge(disk: [[String: Any]], stateSizes: [String: Int64]) -> [Snapshot] {
+        disk.map { item in
+            let name = item["name"] as? String ?? "?"
             let seconds = (item["date-sec"] as? NSNumber)?.doubleValue
-            let stateBytes = (item["vm-state-size"] as? NSNumber)?.int64Value ?? 0
+            let state = stateSizes[name] ?? 0
             return Snapshot(
-                name: item["name"] as? String ?? "?",
+                name: name,
                 date: seconds.map { Date(timeIntervalSince1970: $0) },
-                vmStateSize: stateBytes > 0 ? formatBytes(stateBytes) : "nur Festplatte"
+                vmStateSize: state > 0 ? "mit Arbeitsspeicher (\(formatBytes(state)))" : "nur Festplatte"
             )
         }
     }
 
+    /// Für Tests: liest die Liste direkt aus einer JSON-Ausgabe von `qemu-img info`.
+    static func parse(_ json: Data) -> [Snapshot] {
+        let object = try? JSONSerialization.jsonObject(with: json) as? [String: Any]
+        let items = object?["snapshots"] as? [[String: Any]] ?? []
+        var sizes: [String: Int64] = [:]
+        for item in items {
+            if let name = item["name"] as? String { sizes[name] = (item["vm-state-size"] as? NSNumber)?.int64Value ?? 0 }
+        }
+        return merge(disk: items, stateSizes: sizes)
+    }
+
     static func requireStopped(_ bundle: VMBundle) throws {
         if VMRunner.runtime(of: bundle) != nil {
-            throw MoonError.qmp("Schnappschüsse von Festplatten gehen nur bei ausgeschalteter VM. Nutze für laufende VMs „Schnappschuss (laufend)“.")
+            throw MoonError.qmp("Das geht nur bei ausgeschalteter VM.")
         }
     }
 
-    public static func create(_ bundle: VMBundle, name: String, toolchain: Toolchain) throws {
-        if VMRunner.runtime(of: bundle) != nil {
-            try createLive(bundle, name: name)
-            return
-        }
-        try run(toolchain, ["snapshot", "-c", name, bundle.diskURL.path])
-    }
-
-    /// Schnappschuss einer laufenden VM inklusive Arbeitsspeicher.
-    public static func createLive(_ bundle: VMBundle, name: String) throws {
+    static func hmp(_ bundle: VMBundle, _ command: String) throws {
         try VMRunner.withQMP(bundle) { qmp in
-            let output = try qmp.execute("human-monitor-command", ["command-line": "savevm \(name)"]) as? String ?? ""
+            let output = try qmp.execute("human-monitor-command", ["command-line": command]) as? String ?? ""
             if output.lowercased().contains("error") { throw MoonError.qmp(output.trimmingCharacters(in: .whitespacesAndNewlines)) }
         }
     }
 
-    public static func revert(_ bundle: VMBundle, name: String, toolchain: Toolchain) throws {
+    /// QEMU-Monitor trennt Argumente an Leerzeichen; Namen deshalb ohne Leerzeichen weitergeben.
+    public static func sanitize(_ name: String) -> String {
+        let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: " ", with: "_")
+        return cleaned.isEmpty ? "Schnappschuss" : cleaned
+    }
+
+    /// Läuft die VM, werden Arbeitsspeicher und Geräte mitgesichert (die VM pausiert dafür kurz).
+    public static func create(_ bundle: VMBundle, name: String, toolchain: Toolchain) throws {
+        let tag = sanitize(name)
         if VMRunner.runtime(of: bundle) != nil {
-            try VMRunner.withQMP(bundle) { qmp in
-                let output = try qmp.execute("human-monitor-command", ["command-line": "loadvm \(name)"]) as? String ?? ""
-                if output.lowercased().contains("error") { throw MoonError.qmp(output.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            }
+            try hmp(bundle, "savevm \(tag)")
             return
         }
-        try run(toolchain, ["snapshot", "-a", name, bundle.diskURL.path])
+        for image in images(bundle) { try run(toolchain, ["snapshot", "-c", tag, image.path]) }
+    }
+
+    /// Stellt einen Schnappschuss wieder her. Mit Arbeitsspeicher setzt die VM beim (Neu-)Start genau dort fort.
+    /// Gibt zurück, ob die VM dafür neu gestartet werden muss.
+    @discardableResult
+    public static func revert(_ bundle: VMBundle, name: String, toolchain: Toolchain) throws -> Bool {
+        let hasState = try info(bundle.diskURL, toolchain: toolchain)
+            .first { $0["name"] as? String == name }
+            .map { (($0["vm-state-size"] as? NSNumber)?.int64Value ?? 0) > 0 } ?? false
+        let running = VMRunner.runtime(of: bundle) != nil
+        if hasState {
+            var config = try bundle.loadConfig()
+            config.resumeSnapshot = name
+            try bundle.saveConfig(config)
+            if running { try VMRunner.powerOff(bundle) }
+            return running
+        }
+        if running { try VMRunner.powerOff(bundle) }
+        for image in images(bundle) where try info(image, toolchain: toolchain).contains(where: { $0["name"] as? String == name }) {
+            try run(toolchain, ["snapshot", "-a", name, image.path])
+        }
+        return running
     }
 
     public static func delete(_ bundle: VMBundle, name: String, toolchain: Toolchain) throws {
-        try requireStopped(bundle)
-        try run(toolchain, ["snapshot", "-d", name, bundle.diskURL.path])
+        if VMRunner.runtime(of: bundle) != nil {
+            try hmp(bundle, "delvm \(name)")
+            return
+        }
+        for image in images(bundle) where try info(image, toolchain: toolchain).contains(where: { $0["name"] as? String == name }) {
+            try run(toolchain, ["snapshot", "-d", name, image.path])
+        }
     }
 
     static func run(_ toolchain: Toolchain, _ args: [String]) throws {

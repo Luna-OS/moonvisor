@@ -37,6 +37,8 @@ public struct QEMUCommand: Sendable {
     public var sockets: RuntimeSockets
     /// Zusätzliche CDs (z. B. Treiber-CD), die nach dem Installationsmedium angehängt werden.
     public var extraDiscs: [URL] = []
+    /// Schnappschuss, der beim Start geladen wird (`-loadvm`).
+    public var loadSnapshot: String?
 
     public init(config: VMConfig, bundle: VMBundle, toolchain: Toolchain, sockets: RuntimeSockets, extraDiscs: [URL] = []) {
         self.config = config
@@ -70,6 +72,8 @@ public struct QEMUCommand: Sendable {
         a += ["-smp", "\(max(1, config.cpuCount))"]
         a += ["-m", "\(max(512, config.memoryMB))"]
 
+        // Die Festplatte zuerst anlegen: savevm speichert den Arbeitsspeicher im ersten schnappschussfähigen Laufwerk.
+        a += ["-drive", "if=none,id=hd0,format=qcow2,discard=unmap,detect-zeroes=unmap,file=\(e(bundle.diskURL.path))"]
         a += ["-drive", "if=pflash,format=raw,unit=0,readonly=on,file=\(e(toolchain.firmwareCode.path))"]
         a += ["-drive", "if=pflash,format=qcow2,unit=1,file=\(e(bundle.efiVarsURL.path))"]
 
@@ -99,7 +103,6 @@ public struct QEMUCommand: Sendable {
             a += ["-device", "usb-storage,bus=xhci.0,drive=cd\(index),removable=on,bootindex=\(index == 0 ? 1 : 10 + index)"]
         }
 
-        a += ["-drive", "if=none,id=hd0,format=qcow2,discard=unmap,detect-zeroes=unmap,file=\(e(bundle.diskURL.path))"]
         if config.guestOS == .windows11 {
             // Windows on ARM bringt einen NVMe-Treiber mit, aber keinen virtio-blk-Treiber.
             a += ["-device", "nvme,drive=hd0,serial=moonvisor0,bootindex=0"]
@@ -120,8 +123,8 @@ public struct QEMUCommand: Sendable {
         }
 
         if config.soundEnabled {
-            a += ["-audiodev", "coreaudio,id=snd0"]
-            a += ["-device", "intel-hda", "-device", "hda-duplex,audiodev=snd0"]
+            a += ["-audiodev", "coreaudio,id=snd0,in.voices=0"]
+            a += ["-device", "intel-hda", "-device", "hda-output,audiodev=snd0"]
         }
 
         // Kanal zu den Moonvisor Tools im Gast (Auflösung, Zwischenablage).
@@ -139,6 +142,9 @@ public struct QEMUCommand: Sendable {
         a += ["-display", "none"]
         a += ["-vnc", "unix:\(e(sockets.vnc))"]
         a += ["-qmp", "unix:\(e(sockets.qmp)),server=on,wait=off"]
+        if let loadSnapshot {
+            a += ["-loadvm", loadSnapshot]
+        }
         return a
     }
 

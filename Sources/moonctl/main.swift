@@ -187,7 +187,12 @@ func run() throws {
                 print("\(snap.name)\t\(snap.date.map(formatter.string) ?? "")\t\(snap.vmStateSize)")
             }
         case "create": try Snapshots.create(bundle, name: try positional(3, "[name]"), toolchain: toolchain)
-        case "revert": try Snapshots.revert(bundle, name: try positional(3, "[name]"), toolchain: toolchain)
+        case "revert":
+            if try Snapshots.revert(bundle, name: try positional(3, "[name]"), toolchain: toolchain) {
+                let full = try Toolchain.locate(requireTPM: (try bundle.loadConfig()).tpmEnabled)
+                try VMRunner.start(bundle: bundle, toolchain: full)
+                print("Wiederhergestellt, die VM läuft wieder.")
+            }
         case "delete": try Snapshots.delete(bundle, name: try positional(3, "[name]"), toolchain: toolchain)
         default: throw CLIError(message: usage)
         }
