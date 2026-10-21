@@ -26,7 +26,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Moonvisor
-          path: build/*.dmg
+          path: |
+            build/*.dmg
+            build/icon/icon_1024.png
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
