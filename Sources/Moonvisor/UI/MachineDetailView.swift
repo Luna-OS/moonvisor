@@ -59,7 +59,10 @@ struct MachineDetailView: View {
                         NSWorkspace.shared.activateFileViewerSelecting([item.bundle.url])
                     }
                     Button("Duplicate") {
-                        perform { selection = try library.clone(item) }
+                        perform {
+                            let url = try library.clone(item)
+                            selection = library.item(for: url)?.id
+                        }
                     }
                     .disabled(runner.isActive)
                     Spacer()
