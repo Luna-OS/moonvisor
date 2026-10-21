@@ -103,12 +103,15 @@ final class VNCClient: @unchecked Sendable {
         // 32 Bit BGRX, little endian – passt direkt zu CGImage (byteOrder32Little + noneSkipFirst).
         var pixelFormat: [UInt8] = [0, 0, 0, 0]
         pixelFormat += [32, 24, 0, 1]
-        pixelFormat += u16(255) + u16(255) + u16(255)
+        pixelFormat += u16(255)
+        pixelFormat += u16(255)
+        pixelFormat += u16(255)
         pixelFormat += [16, 8, 0, 0, 0, 0]
         try s.write(Data(pixelFormat))
 
         let encodings: [Encoding] = [.copyRect, .raw, .extendedDesktopSize, .desktopSize, .qemuExtendedKey]
-        var msg: [UInt8] = [2, 0] + u16(UInt16(encodings.count))
+        var msg: [UInt8] = [2, 0]
+        msg += u16(UInt16(encodings.count))
         for e in encodings { msg += u32(UInt32(bitPattern: e.rawValue)) }
         try s.write(Data(msg))
         requestUpdate(incremental: false)
@@ -251,12 +254,21 @@ final class VNCClient: @unchecked Sendable {
 
     func requestUpdate(incremental: Bool) {
         let w = UInt16(clamping: width), h = UInt16(clamping: height)
-        send([3, incremental ? 1 : 0] + u16(0) + u16(0) + u16(w) + u16(h))
+        var msg: [UInt8] = [3, incremental ? 1 : 0]
+        msg += u16(0)
+        msg += u16(0)
+        msg += u16(w)
+        msg += u16(h)
+        send(msg)
     }
 
     /// Taste per XT-Scancode (Set 1). Erweiterte Tasten (0xE0-Präfix) werden mit gesetztem Bit 7 kodiert.
     func sendKey(scancode: UInt32, down: Bool) {
-        send([255, 0] + u16(down ? 1 : 0) + u32(0) + u32(scancode))
+        var msg: [UInt8] = [255, 0]
+        msg += u16(down ? 1 : 0)
+        msg += u32(0)
+        msg += u32(scancode)
+        send(msg)
     }
 
     var canSendScancodes: Bool { supportsExtendedKeys }
@@ -265,13 +277,27 @@ final class VNCClient: @unchecked Sendable {
     func requestDesktopSize(width w: Int, height h: Int) {
         guard supportsDesktopResize, w >= 640, h >= 480 else { return }
         let ww = UInt16(clamping: w & ~7), hh = UInt16(clamping: h)
-        send([251, 0] + u16(ww) + u16(hh) + [1, 0] + u32(0) + u16(0) + u16(0) + u16(ww) + u16(hh) + u32(0))
+        // SetDesktopSize: Größe, ein Bildschirm (ID 0) an Position 0/0 mit derselben Größe.
+        var msg: [UInt8] = [251, 0]
+        msg += u16(ww)
+        msg += u16(hh)
+        msg += [1, 0]
+        msg += u32(0)
+        msg += u16(0)
+        msg += u16(0)
+        msg += u16(ww)
+        msg += u16(hh)
+        msg += u32(0)
+        send(msg)
     }
 
     func sendPointer(x: Int, y: Int, buttons: UInt8) {
         let px = UInt16(clamping: max(0, min(x, width - 1)))
         let py = UInt16(clamping: max(0, min(y, height - 1)))
-        send([5, buttons] + u16(px) + u16(py))
+        var msg: [UInt8] = [5, buttons]
+        msg += u16(px)
+        msg += u16(py)
+        send(msg)
     }
 }
 

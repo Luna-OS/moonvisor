@@ -6,8 +6,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 VERSION="${1:-$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo 0.0.0)}"
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
-DIST="dist"
-APP="$DIST/Moonvisor.app"
+DIST="$(pwd)/dist"
+# Bundle außerhalb von iCloud-synchronisierten Ordnern bauen: iCloud hängt Datei-Attribute an,
+# die die Signaturprüfung scheitern lassen („App ist beschädigt“).
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+APP="$WORK/Moonvisor.app"
+mkdir -p "$DIST"
 
 echo "▸ Kompiliere (release, arm64) …"
 swift build -c release --arch arm64 --product Moonvisor
@@ -21,7 +26,7 @@ cp "$BIN/Moonvisor" "$APP/Contents/MacOS/Moonvisor"
 cp "$BIN/moonctl" "$APP/Contents/Resources/bin/moonctl"
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" Resources/Info.plist > "$APP/Contents/Info.plist"
 
-ICONSET="$DIST/AppIcon.iconset"
+ICONSET="$WORK/AppIcon.iconset"
 swift scripts/make-icon.swift "$ICONSET" >/dev/null
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET"
@@ -34,15 +39,20 @@ codesign --verify --strict "$APP"
 
 echo "▸ Packe …"
 rm -f "$DIST"/Moonvisor-*.zip "$DIST"/Moonvisor-*.dmg
-ditto -c -k --keepParent "$APP" "$DIST/Moonvisor-$VERSION-arm64.zip"
-
-STAGE="$DIST/dmg"
-rm -rf "$STAGE" && mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/"
+ditto -c -k --norsrc --noextattr --keepParent "$APP" "$DIST/Moonvisor-$VERSION-arm64.zip"
+STAGE="$WORK/dmg"
+mkdir -p "$STAGE"
+ditto --norsrc --noextattr "$APP" "$STAGE/Moonvisor.app"
 ln -s /Applications "$STAGE/Programme"
 hdiutil create -quiet -volname "Moonvisor $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DIST/Moonvisor-$VERSION-arm64.dmg"
-rm -rf "$STAGE"
 
+# Gegenprobe: App im fertigen DMG muss strikt gültig signiert sein.
+MOUNT="$(hdiutil attach -readonly -nobrowse "$DIST/Moonvisor-$VERSION-arm64.dmg" | tail -1 | awk -F'\t' '{print $NF}')"
+codesign --verify --strict "$MOUNT/Moonvisor.app"
+hdiutil detach -quiet "$MOUNT"
+
+rm -rf "$DIST/Moonvisor.app"
+ditto "$APP" "$DIST/Moonvisor.app"
 (cd "$DIST" && shasum -a 256 Moonvisor-"$VERSION"-arm64.* > SHA256SUMS.txt)
 echo "✓ Fertig:"
 ls -lh "$DIST"
