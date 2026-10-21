@@ -7,6 +7,7 @@ public struct RuntimeSockets: Codable, Hashable, Sendable {
     public var qmp: String { directory + "/qmp" }
     public var vnc: String { directory + "/vnc" }
     public var tpm: String { directory + "/tpm" }
+    public var agent: String { directory + "/agent" }
 
     public init(directory: String) {
         self.directory = directory
@@ -70,7 +71,7 @@ public struct QEMUCommand: Sendable {
         a += ["-m", "\(max(512, config.memoryMB))"]
 
         a += ["-drive", "if=pflash,format=raw,unit=0,readonly=on,file=\(e(toolchain.firmwareCode.path))"]
-        a += ["-drive", "if=pflash,format=raw,unit=1,file=\(e(bundle.efiVarsURL.path))"]
+        a += ["-drive", "if=pflash,format=qcow2,unit=1,file=\(e(bundle.efiVarsURL.path))"]
 
         if config.tpmEnabled {
             a += ["-chardev", "socket,id=chrtpm,path=\(e(sockets.tpm))"]
@@ -122,6 +123,11 @@ public struct QEMUCommand: Sendable {
             a += ["-audiodev", "coreaudio,id=snd0"]
             a += ["-device", "intel-hda", "-device", "hda-duplex,audiodev=snd0"]
         }
+
+        // Kanal zu den Moonvisor Tools im Gast (Auflösung, Zwischenablage).
+        a += ["-chardev", "socket,id=agent0,path=\(e(sockets.agent)),server=on,wait=off"]
+        a += ["-device", "virtio-serial-pci,id=vser0"]
+        a += ["-device", "virtserialport,bus=vser0.0,chardev=agent0,name=\(GuestTools.portName)"]
 
         a += ["-device", "virtio-balloon-pci"]
         a += ["-device", "virtio-rng-pci"]

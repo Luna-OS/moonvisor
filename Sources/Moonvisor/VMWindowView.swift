@@ -41,7 +41,8 @@ struct VMWindowContent: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if entry.state != .stopped {
-                VMDisplayView(session: entry.display, commandAsControl: entry.config.commandAsControl)
+                VMDisplayView(session: entry.display, commandAsControl: entry.config.commandAsControl,
+                              autoResize: entry.config.usesVirtioGPU)
                     .ignoresSafeArea()
                 if !entry.display.connected {
                     overlay {

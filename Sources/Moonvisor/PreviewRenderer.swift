@@ -6,7 +6,100 @@ import SwiftUI
 /// und holt über den eingebauten VNC-Client ein Bild einer laufenden VM.
 @MainActor
 enum PreviewRenderer {
+    /// `Moonvisor --vnc-input-test <datei.png>`: drückt über den eingebauten VNC-Client die Windows-Taste,
+    /// tippt „notepad“ + Enter und speichert danach ein Bildschirmfoto. Prüft den kompletten Eingabeweg.
+    static func runInputTestIfRequested() {
+        let args = CommandLine.arguments
+        guard let index = args.firstIndex(of: "--vnc-input-test"), index + 1 < args.count else { return }
+        let output = URL(fileURLWithPath: args[index + 1])
+        guard let bundle = VMLibrary.list().first(where: { VMRunner.runtime(of: $0) != nil }),
+              let info = VMRunner.runtime(of: bundle) else {
+            print("✗ keine laufende VM")
+            exit(1)
+        }
+        let client = VNCClient(path: info.sockets.vnc)
+        var started = false
+        client.onFrame = { _ in
+            guard !started else { return }
+            started = true
+            let letters: [Character: UInt32] = ["n": 0x31, "o": 0x18, "t": 0x14, "e": 0x12, "p": 0x19, "a": 0x1E, "d": 0x20]
+            DispatchQueue.global().async {
+                client.sendPointer(x: client.width / 2, y: client.height / 2, buttons: 0)
+                client.sendKey(scancode: KeyMap.windowsKey, down: true)
+                usleep(80_000)
+                client.sendKey(scancode: KeyMap.windowsKey, down: false)
+                usleep(2_500_000)
+                for ch in "notepad" {
+                    client.sendKey(scancode: letters[ch]!, down: true)
+                    usleep(40_000)
+                    client.sendKey(scancode: letters[ch]!, down: false)
+                    usleep(60_000)
+                }
+                usleep(2_000_000)
+                client.sendKey(scancode: 0x1C, down: true)
+                usleep(50_000)
+                client.sendKey(scancode: 0x1C, down: false)
+                usleep(5_000_000)
+                for ch in "notepad" {
+                    client.sendKey(scancode: letters[ch]!, down: true)
+                    usleep(40_000)
+                    client.sendKey(scancode: letters[ch]!, down: false)
+                    usleep(60_000)
+                }
+                usleep(1_500_000)
+                do {
+                    try VMRunner.withQMP(bundle) { try $0.screendump(to: output) }
+                    print("✓ Eingabetest: \(output.path) (Scancodes: \(client.canSendScancodes ? "ja" : "nein"))")
+                    exit(0)
+                } catch {
+                    print("✗ \(error.localizedDescription)")
+                    exit(1)
+                }
+            }
+        }
+        client.onDisconnect = { error in
+            print("✗ VNC: \(error?.localizedDescription ?? "getrennt")")
+            exit(1)
+        }
+        client.start()
+    }
+
+    /// `Moonvisor --vnc-resize-test <breite>x<höhe>`: fordert eine neue Gastauflösung an und meldet,
+    /// welche Auflösung der Gast danach liefert.
+    static func runResizeTestIfRequested() {
+        let args = CommandLine.arguments
+        guard let index = args.firstIndex(of: "--vnc-resize-test"), index + 1 < args.count else { return }
+        let parts = args[index + 1].split(separator: "x").compactMap { Int($0) }
+        guard parts.count == 2,
+              let bundle = VMLibrary.list().first(where: { VMRunner.runtime(of: $0) != nil }),
+              let info = VMRunner.runtime(of: bundle) else {
+            print("✗ Aufruf: --vnc-resize-test 1600x1000 (mit laufender VM)")
+            exit(1)
+        }
+        let client = VNCClient(path: info.sockets.vnc)
+        var requested = false
+        client.onFrame = { image in
+            if !requested {
+                requested = true
+                print("Vorher: \(image.width)×\(image.height), Größenänderung unterstützt: \(client.supportsDesktopResize)")
+                client.requestDesktopSize(width: parts[0], height: parts[1])
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                    print("Nachher: \(client.width)×\(client.height)")
+                    print(client.width == parts[0] & ~7 && client.height == parts[1] ? "✓ Auflösung angepasst" : "✗ Auflösung unverändert")
+                    exit(0)
+                }
+            }
+        }
+        client.onDisconnect = { error in
+            print("✗ VNC: \(error?.localizedDescription ?? "getrennt")")
+            exit(1)
+        }
+        client.start()
+    }
+
     static func runIfRequested() {
+        runInputTestIfRequested()
+        runResizeTestIfRequested()
         let args = CommandLine.arguments
         guard let index = args.firstIndex(of: "--render-previews"), index + 1 < args.count else { return }
         let folder = URL(fileURLWithPath: args[index + 1], isDirectory: true)

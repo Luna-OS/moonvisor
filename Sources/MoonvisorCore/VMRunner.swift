@@ -94,9 +94,7 @@ public enum VMRunner {
         try? fm.removeItem(atPath: sockets.directory)
         try fm.createDirectory(atPath: sockets.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
 
-        if !fm.fileExists(atPath: bundle.efiVarsURL.path) {
-            try fm.copyItem(at: toolchain.firmwareVarsTemplate, to: bundle.efiVarsURL)
-        }
+        try toolchain.prepareEFIVars(for: bundle)
 
         fm.createFile(atPath: bundle.logURL.path, contents: nil)
         let log = try FileHandle(forWritingTo: bundle.logURL)
@@ -104,6 +102,10 @@ public enum VMRunner {
         var extraDiscs: [URL] = []
         if fm.fileExists(atPath: bundle.setupDiscURL.path) && config.installMediaAttached {
             extraDiscs.append(bundle.setupDiscURL)
+        }
+        if config.guestOS == .windows11 {
+            try GuestTools.ensureDisc(for: bundle)
+            extraDiscs.append(bundle.toolsDiscURL)
         }
         if config.attachDriversDisc, let drivers = DriverStore.cachedVirtioISO {
             extraDiscs.append(drivers)

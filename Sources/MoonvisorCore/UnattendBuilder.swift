@@ -276,19 +276,12 @@ public enum UnattendBuilder {
     New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
     Start-Transcript -Path $log -Append | Out-Null
 
-    $drives = Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root }
-    foreach ($root in $drives) {
-        if (Test-Path (Join-Path $root 'NetKVM')) {
-            Write-Output "Treiber-CD gefunden: $root"
-            Get-ChildItem -Path $root -Directory | ForEach-Object {
-                $dir = Join-Path $_.FullName 'w11\ARM64'
-                if (Test-Path $dir) {
-                    Get-ChildItem -Path $dir -Filter *.inf | ForEach-Object {
-                        Write-Output "Installiere $($_.FullName)"
-                        pnputil.exe /add-driver $_.FullName /install
-                    }
-                }
-            }
+    # Treiber und Agent installieren die Moonvisor Tools (eigene CD „MOONTOOLS“).
+    foreach ($root in (Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root })) {
+        $installer = Join-Path $root 'moon-tools\install.ps1'
+        if (Test-Path $installer) {
+            Write-Output "Moonvisor Tools: $installer"
+            & $installer
         }
     }
 

@@ -9,7 +9,10 @@ final class VMEntry: Identifiable {
     var state: VMRunState = .stopped
     var thumbnail: NSImage?
     var busyMessage: String?
+    /// Moonvisor Tools im Gast melden sich über den Agent-Kanal.
+    var toolsActive = false
     let display = DisplaySession()
+    @ObservationIgnored var agent: AgentChannel?
     @ObservationIgnored var displaySocket: String?
     @ObservationIgnored var thumbnailDate: Date?
 
@@ -49,10 +52,13 @@ final class AppModel {
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private let worker = DispatchQueue(label: "moonvisor.model", qos: .userInitiated)
     @ObservationIgnored private var tick = 0
+    @ObservationIgnored private var pasteboardCount = NSPasteboard.general.changeCount
+    @ObservationIgnored private var lastClipboardFromGuest: String?
 
     init() {
         reload()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refreshStates() }
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.syncPasteboardToGuests() }
     }
 
     func entry(_ id: String?) -> VMEntry? {
@@ -99,14 +105,65 @@ final class AppModel {
                         if entry.displaySocket != info.sockets.vnc {
                             entry.displaySocket = info.sockets.vnc
                             entry.display.connect(socketPath: info.sockets.vnc)
+                            self.connectAgent(entry, path: info.sockets.agent)
                         }
                     } else if entry.displaySocket != nil {
                         entry.displaySocket = nil
                         entry.display.disconnect()
+                        entry.agent?.stop()
+                        entry.agent = nil
+                        entry.display.agent = nil
+                        entry.toolsActive = false
                     }
                     entry.loadThumbnail()
                 }
             }
+        }
+    }
+
+    // MARK: Moonvisor Tools
+
+    private func connectAgent(_ entry: VMEntry, path: String) {
+        entry.agent?.stop()
+        let agent = AgentChannel(path: path)
+        agent.onMessage = { [weak self, weak entry] command, argument in
+            guard let self, let entry else { return }
+            switch command {
+            case "hello":
+                entry.toolsActive = true
+                // Mit installierten Tools ist auch der virtio-GPU-Treiber da: ab dem nächsten Start dynamische Auflösung.
+                if entry.config.guestOS == .windows11 && entry.config.graphics == .automatic {
+                    var config = entry.config
+                    config.graphics = .virtio
+                    self.save(entry, config: config)
+                }
+                if entry.config.usesVirtioGPU { entry.display.requestCurrentSize() }
+            case "clip":
+                guard entry.config.sharedClipboard,
+                      let data = Data(base64Encoded: argument),
+                      let text = String(data: data, encoding: .utf8) else { return }
+                self.lastClipboardFromGuest = text
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                self.pasteboardCount = NSPasteboard.general.changeCount
+            default:
+                break
+            }
+        }
+        agent.onClose = { [weak entry] in entry?.toolsActive = false }
+        entry.agent = agent
+        entry.display.agent = agent
+        agent.start()
+    }
+
+    /// Mac-Zwischenablage an alle VMs mit Moonvisor Tools weitergeben.
+    private func syncPasteboardToGuests() {
+        let pasteboard = NSPasteboard.general
+        guard pasteboard.changeCount != pasteboardCount else { return }
+        pasteboardCount = pasteboard.changeCount
+        guard let text = pasteboard.string(forType: .string), text != lastClipboardFromGuest, text.utf8.count < 4_000_000 else { return }
+        for entry in entries where entry.toolsActive && entry.config.sharedClipboard {
+            entry.agent?.sendClipboard(text)
         }
     }
 

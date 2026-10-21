@@ -1,3 +1,4 @@
+import MoonvisorCore
 import AppKit
 import Carbon.HIToolbox
 import SwiftUI
@@ -8,6 +9,11 @@ final class VMDisplayNSView: NSView {
         didSet { releaseAllKeys(oldClient: oldValue) }
     }
     var commandAsControl = false
+    /// Gastauflösung an die Fenstergröße anpassen (nur mit virtio-GPU möglich).
+    var autoResize = false
+    /// Wird mit der gewünschten Gastauflösung aufgerufen (Moonvisor Tools im Gast).
+    var onResizeRequest: ((Int, Int) -> Void)?
+    private var resizeWork: DispatchWorkItem?
     private var pressed: Set<UInt32> = []
     private var buttons: UInt8 = 0
     private var scrollAccumulator = CGPoint.zero
@@ -62,6 +68,20 @@ final class VMDisplayNSView: NSView {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         window?.invalidateCursorRects(for: self)
+        scheduleGuestResize()
+    }
+
+    func scheduleGuestResize() {
+        guard autoResize else { return }
+        resizeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let w = Int(self.bounds.width), h = Int(self.bounds.height)
+            self.client?.requestDesktopSize(width: w, height: h)
+            self.onResizeRequest?(w, h)
+        }
+        resizeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
     /// Bereich, in dem das Gastbild (seitenverhältnistreu) dargestellt wird.
@@ -204,9 +224,11 @@ final class VMDisplayNSView: NSView {
 struct VMDisplayView: NSViewRepresentable {
     let session: DisplaySession
     var commandAsControl: Bool
+    var autoResize: Bool
 
     func makeNSView(context: Context) -> VMDisplayNSView {
         let view = VMDisplayNSView()
+        view.onResizeRequest = { [weak session] w, h in session?.agent?.requestResolution(width: w, height: h) }
         session.attach(view)
         DispatchQueue.main.async { view.window?.makeFirstResponder(view) }
         return view
@@ -214,6 +236,10 @@ struct VMDisplayView: NSViewRepresentable {
 
     func updateNSView(_ view: VMDisplayNSView, context: Context) {
         view.commandAsControl = commandAsControl
+        if view.autoResize != autoResize {
+            view.autoResize = autoResize
+            view.scheduleGuestResize()
+        }
         if session.view !== view { session.attach(view) }
     }
 }
@@ -225,6 +251,7 @@ final class DisplaySession {
     private(set) var resolution: CGSize = .zero
     var lastError: String?
     @ObservationIgnored weak var view: VMDisplayNSView?
+    @ObservationIgnored var agent: AgentChannel?
     @ObservationIgnored private var client: VNCClient?
     @ObservationIgnored private var lastImage: CGImage?
 
@@ -264,4 +291,9 @@ final class DisplaySession {
     }
 
     var snapshotImage: CGImage? { lastImage }
+
+    /// Nach dem Verbinden der Tools die aktuelle Fenstergröße anfragen.
+    func requestCurrentSize() {
+        view?.scheduleGuestResize()
+    }
 }

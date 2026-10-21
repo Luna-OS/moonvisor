@@ -91,6 +91,16 @@ public struct Toolchain: Sendable {
         return Toolchain(qemuSystem: qemu, qemuImg: img, swtpm: s.swtpm, firmwareCode: fw, firmwareVarsTemplate: vars)
     }
 
+    /// Legt die UEFI-Variablen einer VM aus der Vorlage an bzw. wandelt rohe Variablen in qcow2 um.
+    public func prepareEFIVars(for bundle: VMBundle) throws {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: bundle.efiVarsURL.path) else { return }
+        let source = fm.fileExists(atPath: bundle.legacyEfiVarsURL.path) ? bundle.legacyEfiVarsURL : firmwareVarsTemplate
+        let result = try ProcessRunner.run(qemuImg, ["convert", "-f", "raw", "-O", "qcow2", source.path, bundle.efiVarsURL.path])
+        guard result.status == 0 else { throw MoonError.processFailed("qemu-img", result.output) }
+        if source == bundle.legacyEfiVarsURL { try? fm.removeItem(at: source) }
+    }
+
     public static var isAppleSilicon: Bool {
         var value: Int32 = 0
         var size = MemoryLayout<Int32>.size

@@ -83,7 +83,7 @@ public enum ParallelsImporter {
             progress("Festplatte von „\(info.name)“ wird konvertiert …")
             let result = try ProcessRunner.run(toolchain.qemuImg, ["convert", "-U", "-f", "parallels", "-O", "qcow2", "-o", "lazy_refcounts=on", image.path, bundle.diskURL.path])
             guard result.status == 0 else { throw MoonError.processFailed("qemu-img", result.output) }
-            try fm.copyItem(at: toolchain.firmwareVarsTemplate, to: bundle.efiVarsURL)
+            try toolchain.prepareEFIVars(for: bundle)
 
             let gb = Int(((info.diskSizeBytes ?? 64 * 1_073_741_824) + 1_073_741_823) / 1_073_741_824)
             var config = VMConfig(name: info.name, guestOS: info.isWindows ? .windows11 : .other,

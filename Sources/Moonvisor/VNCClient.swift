@@ -12,6 +12,7 @@ final class VNCClient: @unchecked Sendable {
         case copyRect = 1
         case desktopSize = -223
         case qemuExtendedKey = -258
+        case extendedDesktopSize = -308
     }
 
     var onFrame: ((CGImage) -> Void)?
@@ -26,6 +27,7 @@ final class VNCClient: @unchecked Sendable {
     private(set) var height = 0
     private var framebuffer: UnsafeMutableRawPointer?
     private var supportsExtendedKeys = false
+    private(set) var supportsDesktopResize = false
     private let frameLock = NSLock()
     private var framePending = false
 
@@ -105,7 +107,7 @@ final class VNCClient: @unchecked Sendable {
         pixelFormat += [16, 8, 0, 0, 0, 0]
         try s.write(Data(pixelFormat))
 
-        let encodings: [Encoding] = [.copyRect, .raw, .desktopSize, .qemuExtendedKey]
+        let encodings: [Encoding] = [.copyRect, .raw, .extendedDesktopSize, .desktopSize, .qemuExtendedKey]
         var msg: [UInt8] = [2, 0] + u16(UInt16(encodings.count))
         for e in encodings { msg += u32(UInt32(bitPattern: e.rawValue)) }
         try s.write(Data(msg))
@@ -151,6 +153,12 @@ final class VNCClient: @unchecked Sendable {
                 resize(width: w, height: h)
             case Encoding.qemuExtendedKey.rawValue:
                 supportsExtendedKeys = true
+            case Encoding.extendedDesktopSize.rawValue:
+                // x = Grund (0 = Server, 1 = unsere Anfrage), y = Status; danach die Bildschirmliste.
+                let count = Int(try s.read(exactly: 4)[0])
+                _ = try s.read(exactly: count * 16)
+                supportsDesktopResize = true
+                if w > 0 && h > 0 && (w != width || h != height) { resize(width: w, height: h) }
             default:
                 throw MoonError.qmp("Nicht unterstützte VNC-Kodierung \(encoding)")
             }
@@ -252,6 +260,13 @@ final class VNCClient: @unchecked Sendable {
     }
 
     var canSendScancodes: Bool { supportsExtendedKeys }
+
+    /// Bittet den Gast um eine neue Auflösung (z. B. nach dem Vergrößern des Fensters).
+    func requestDesktopSize(width w: Int, height h: Int) {
+        guard supportsDesktopResize, w >= 640, h >= 480 else { return }
+        let ww = UInt16(clamping: w & ~7), hh = UInt16(clamping: h)
+        send([251, 0] + u16(ww) + u16(hh) + [1, 0] + u32(0) + u16(0) + u16(0) + u16(ww) + u16(hh) + u32(0))
+    }
 
     func sendPointer(x: Int, y: Int, buttons: UInt8) {
         let px = UInt16(clamping: max(0, min(x, width - 1)))

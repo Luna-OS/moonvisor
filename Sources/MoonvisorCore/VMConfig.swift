@@ -144,6 +144,8 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
     /// Mac-Befehlstaste als Strg an den Gast schicken (Parallels-Standard) statt als Windows-Taste.
     public var commandAsControl: Bool = false
     public var graphics: GraphicsMode = .automatic
+    /// Text-Zwischenablage mit dem Gast teilen (benötigt Moonvisor Tools).
+    public var sharedClipboard: Bool = true
 
     public init(
         id: UUID = UUID(),
@@ -169,7 +171,7 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
         case version, id, name, guestOS, notes, createdAt, cpuCount, memoryMB, diskSizeGB, profile
         case networkMode, portForwards, macAddress, soundEnabled, tpmEnabled
         case installMediaPath, installMediaAttached, autoConfirmCDBoot, installMode, attachDriversDisc
-        case startOnOpen, commandAsControl, graphics
+        case startOnOpen, commandAsControl, graphics, sharedClipboard
     }
 
     /// Fehlende Felder (ältere Konfigurationen) bekommen ihren Standardwert.
@@ -198,6 +200,7 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
         startOnOpen = try c.decodeIfPresent(Bool.self, forKey: .startOnOpen) ?? false
         commandAsControl = try c.decodeIfPresent(Bool.self, forKey: .commandAsControl) ?? false
         graphics = try c.decodeIfPresent(GraphicsMode.self, forKey: .graphics) ?? .automatic
+        sharedClipboard = try c.decodeIfPresent(Bool.self, forKey: .sharedClipboard) ?? true
     }
 
     /// Lokal administrierte Unicast-MAC im QEMU-Präfix 52:54:00.
@@ -220,9 +223,13 @@ public struct VMBundle: Hashable, Sendable, Identifiable {
 
     public var configURL: URL { url.appendingPathComponent("config.json") }
     public var diskURL: URL { url.appendingPathComponent("disk.qcow2") }
-    public var efiVarsURL: URL { url.appendingPathComponent("efi-vars.fd") }
+    /// UEFI-Variablen als qcow2, damit Schnappschüsse der laufenden VM möglich sind.
+    public var efiVarsURL: URL { url.appendingPathComponent("efi-vars.qcow2") }
+    /// Ältere VMs speicherten die Variablen roh.
+    var legacyEfiVarsURL: URL { url.appendingPathComponent("efi-vars.fd") }
     public var tpmStateURL: URL { url.appendingPathComponent("tpm", isDirectory: true) }
     public var setupDiscURL: URL { url.appendingPathComponent("moon-setup.iso") }
+    public var toolsDiscURL: URL { url.appendingPathComponent("moon-tools.iso") }
     public var runtimeURL: URL { url.appendingPathComponent("runtime.json") }
     public var thumbnailURL: URL { url.appendingPathComponent("thumbnail.png") }
     public var logURL: URL { url.appendingPathComponent("qemu.log") }
@@ -239,5 +246,16 @@ public struct VMBundle: Hashable, Sendable, Identifiable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(config).write(to: configURL, options: .atomic)
+    }
+}
+
+extension VMConfig {
+    /// Ob die VM mit virtio-GPU startet (dann ist die Auflösung veränderbar).
+    public var usesVirtioGPU: Bool {
+        switch graphics {
+        case .virtio: return true
+        case .basic: return false
+        case .automatic: return guestOS != .windows11
+        }
     }
 }

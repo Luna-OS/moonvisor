@@ -268,6 +268,14 @@ struct ConfigurationView: View {
                 Toggle("VM automatisch starten, wenn ihr Fenster geöffnet wird", isOn: $draft.startOnOpen)
                     .toggleStyle(.switch).tint(Moon.accent)
             }
+            row("Zwischenablage") {
+                Toggle("Text-Zwischenablage mit der VM teilen", isOn: $draft.sharedClipboard)
+                    .toggleStyle(.switch).tint(Moon.accent)
+            }
+            row("Moonvisor Tools") {
+                Text(entry.toolsActive ? "Aktiv – Auflösung und Zwischenablage werden abgeglichen." : "Nicht verbunden. In Windows die CD „MOONTOOLS“ öffnen und „Moonvisor Tools installieren“ ausführen.")
+                    .font(.system(size: 12)).foregroundStyle(entry.toolsActive ? Moon.mint : Moon.textMuted)
+            }
             row("Tastatur") {
                 VStack(alignment: .leading, spacing: 4) {
                     Toggle("⌘ als Strg senden (⌘C, ⌘V wie auf dem Mac)", isOn: $draft.commandAsControl)

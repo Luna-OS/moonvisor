@@ -127,7 +127,7 @@ public enum VMFactory {
             guard result.status == 0 else { throw MoonError.processFailed("qemu-img", result.output) }
 
             progress("UEFI-Firmware wird vorbereitet …")
-            try fm.copyItem(at: toolchain.firmwareVarsTemplate, to: bundle.efiVarsURL)
+            try toolchain.prepareEFIVars(for: bundle)
 
             if request.guestOS == .windows11 {
                 progress("Installationshilfe wird erstellt …")
@@ -150,18 +150,14 @@ public enum VMFactory {
 }
 
 public enum Installation {
-    /// Ab dieser belegten Größe gilt Windows als installiert (eine frische Installation belegt > 10 GB).
-    static let installedThreshold: Int64 = 8 * 1_073_741_824
-
-    public static func isProbablyInstalled(_ bundle: VMBundle) -> Bool {
-        allocatedSize(of: bundle.diskURL) > installedThreshold
-    }
-
-    /// Vor jedem Start: Installationsmedium auswerfen, sobald Windows installiert ist.
+    /// Vor jedem Start: Ein gelöschtes oder verschobenes Installationsmedium wird ausgeworfen, statt den Start
+    /// zu blockieren. Ein vorhandenes Medium bleibt eingelegt – die Festplatte steht in der Bootreihenfolge vorn,
+    /// und den CD-Boot-Tastendruck gibt es nur beim allerersten Start.
     static func prepareForBoot(bundle: VMBundle, config: inout VMConfig) {
-        guard config.guestOS == .windows11, config.installMediaAttached, !config.autoConfirmCDBoot else { return }
-        if isProbablyInstalled(bundle) {
+        guard config.installMediaAttached, let path = config.installMediaPath else { return }
+        if !FileManager.default.fileExists(atPath: path) {
             config.installMediaAttached = false
+            config.autoConfirmCDBoot = false
             try? bundle.saveConfig(config)
         }
     }

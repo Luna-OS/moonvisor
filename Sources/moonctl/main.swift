@@ -195,6 +195,48 @@ func run() throws {
     case "delete":
         try VMLibrary.moveToTrash(try vm())
 
+    case "tools":
+        // Diagnose: moonctl tools <vm> [resize B H | clip TEXT | listen SEKUNDEN]
+        let bundle = try vm()
+        guard let info = VMRunner.runtime(of: bundle) else { throw MoonError.notRunning }
+        let action = args.count > 2 ? args[2] : "status"
+        let channel = AgentChannel(path: info.sockets.agent)
+        let hello = DispatchSemaphore(value: 0)
+        var greeted = false
+        channel.onMessage = { command, argument in
+            switch command {
+            case "hello":
+                if !greeted { greeted = true; print("Moonvisor Tools aktiv (Version \(argument))"); hello.signal() }
+            case "clip":
+                let text = Data(base64Encoded: argument).flatMap { String(data: $0, encoding: .utf8) } ?? "?"
+                print("Zwischenablage aus der VM: \(text)")
+            default:
+                print("\(command) \(argument)")
+            }
+        }
+        channel.start()
+        // Die Antworten kommen über den Main-Thread an; RunLoop bedienen, während wir warten.
+        func pump(_ seconds: Double, until done: () -> Bool = { false }) {
+            let end = Date().addingTimeInterval(seconds)
+            while Date() < end && !done() { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+        }
+        pump(10) { greeted }
+        guard greeted else { throw CLIError(message: "Keine Antwort von den Moonvisor Tools im Gast.") }
+        _ = hello
+        switch action {
+        case "resize":
+            channel.requestResolution(width: Int(try positional(3, "Breite")) ?? 1600, height: Int(try positional(4, "Höhe")) ?? 1000)
+            pump(6)
+        case "clip":
+            channel.sendClipboard(try positional(3, "Text"))
+            pump(1)
+        case "listen":
+            pump(Double(args.count > 3 ? args[3] : "15") ?? 15)
+        default:
+            break
+        }
+        channel.stop()
+
     case "help", "-h", "--help":
         print(usage)
 
