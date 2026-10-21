@@ -33,7 +33,8 @@ ctx.addPath(tilePath)
 ctx.clip()
 let sky = CGGradient(colorsSpace: space, colors: [color(0x2A2650), color(0x131230), color(0x100F27)] as CFArray,
                      locations: [0, 0.6, 1])!
-ctx.drawLinearGradient(sky, start: CGPoint(x: 330, y: 924), end: CGPoint(x: 700, y: 100), options: [])
+ctx.drawLinearGradient(sky, start: CGPoint(x: 330, y: 924), end: CGPoint(x: 700, y: 100),
+                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
 let haze = CGGradient(colorsSpace: space, colors: [color(0xC9B3F0, 0.22), color(0xC9B3F0, 0)] as CFArray,
                       locations: [0, 1])!
 ctx.drawRadialGradient(haze, startCenter: CGPoint(x: 512, y: 560), startRadius: 0,
@@ -53,11 +54,14 @@ for (x, y, r, a) in stars {
 ctx.setShadow(offset: .zero, blur: 70, color: color(0xC9B3F0, 0.75))
 ctx.beginTransparencyLayer(auxiliaryInfo: nil)
 let moon = CGRect(x: 512 - 250, y: 512 - 250, width: 500, height: 500)
+ctx.saveGState()
 ctx.addEllipse(in: moon)
 ctx.clip()
 let moonFill = CGGradient(colorsSpace: space, colors: [color(0xFFFAF0), color(0xF8F3E0), color(0xC9B3F0)] as CFArray,
                           locations: [0, 0.55, 1])!
 ctx.drawLinearGradient(moonFill, start: CGPoint(x: 330, y: 740), end: CGPoint(x: 640, y: 280), options: [])
+ctx.restoreGState()
+// Cut outside the disc's clip, otherwise its anti-aliased rim survives as a ring.
 ctx.setBlendMode(.clear)
 ctx.fillEllipse(in: CGRect(x: 512 - 120, y: 512 - 160, width: 470, height: 470))
 ctx.endTransparencyLayer()
