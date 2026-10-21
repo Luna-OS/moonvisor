@@ -7,7 +7,7 @@ import Foundation
 ///   Mac → Gast:  `hello-host`, `resize <breite> <höhe>`, `clip <base64>`
 ///   Gast → Mac:  `hello <version>`, `clip <base64>`, `display <breite> <höhe>`
 public enum GuestTools {
-    public static let version = 2
+    public static let version = 3
     public static let portName = "io.moonvisor.agent"
     public static let volumeName = "MOONTOOLS"
 
@@ -78,12 +78,18 @@ public enum GuestTools {
         }
     }
 
-    # Agent installieren und bei jeder Anmeldung unsichtbar starten
+    # Agent installieren. Der virtio-serial-Port lässt sich nur mit Adminrechten öffnen, deshalb startet
+    # eine geplante Aufgabe den Agenten bei jeder Anmeldung mit höchsten Rechten in der Benutzersitzung.
     $agent = Join-Path $base 'Tools\moon-agent.ps1'
     Copy-Item -Force (Join-Path $PSScriptRoot 'moon-agent.ps1') $agent
     Copy-Item -Force (Join-Path $PSScriptRoot 'version.txt') (Join-Path $base 'Tools\version.txt')
-    $command = "conhost.exe --headless powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$agent`""
-    Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'MoonvisorAgent' -Value $command
+    Get-ChildItem (Join-Path $base 'Tools') | ForEach-Object { $_.IsReadOnly = $false }
+    Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'MoonvisorAgent' -ErrorAction SilentlyContinue
+    $action = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$agent`""
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    $principal = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-545' -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName 'Moonvisor Agent' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 
     Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
         Where-Object { $_.CommandLine -like '*moon-agent.ps1*' } |

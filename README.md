@@ -6,9 +6,9 @@ Moonvisor ist eine Virtualisierungs-App für macOS nach dem Vorbild von Parallel
 
 ![Kontrollcenter](docs/control-center.png)
 
-| Installationsassistent | Windows 11 im VM-Fenster |
+| Installationsassistent | Windows 11 in Moonvisor – Text aus der Mac-Zwischenablage eingefügt |
 | --- | --- |
-| ![Assistent](docs/assistant.png) | ![Windows 11](docs/vm-display.png) |
+| ![Assistent](docs/assistant.png) | ![Windows 11](docs/windows11.jpg) |
 
 ## Was kann Moonvisor?
 
