@@ -1,0 +1,20 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests
+        run: swift test
+      - name: App bauen
+        run: scripts/build-app.sh "0.0.0-ci"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Moonvisor
+          path: dist/Moonvisor-*.dmg

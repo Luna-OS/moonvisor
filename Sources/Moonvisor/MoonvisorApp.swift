@@ -1,0 +1,184 @@
+import AppKit
+import MoonvisorCore
+import SwiftUI
+
+@main
+struct MoonvisorApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @State private var model = AppModel()
+
+    var body: some Scene {
+        Window("Kontrollcenter", id: "control-center") {
+            ControlCenterView()
+                .environment(model)
+                .preferredColorScheme(.dark)
+                .errorAlert(model)
+                .onAppear { appDelegate.model = model }
+        }
+        .defaultSize(width: 520, height: 560)
+
+        WindowGroup("Virtuelle Maschine", id: "vm", for: String.self) { $id in
+            VMWindowView(id: id ?? "")
+                .environment(model)
+                .preferredColorScheme(.dark)
+                .errorAlert(model)
+        }
+        .defaultSize(width: 1100, height: 760)
+
+        WindowGroup("Konfiguration", id: "config", for: String.self) { $id in
+            ConfigurationWindow(id: id ?? "")
+                .environment(model)
+                .preferredColorScheme(.dark)
+        }
+        .windowResizability(.contentSize)
+
+        Window("Neue virtuelle Maschine", id: "assistant") {
+            AssistantView()
+                .environment(model)
+                .preferredColorScheme(.dark)
+        }
+        .windowResizability(.contentSize)
+
+        Settings {
+            SettingsView()
+                .environment(model)
+                .preferredColorScheme(.dark)
+        }
+        .commands { MoonCommands(model: model) }
+    }
+}
+
+struct MoonCommands: Commands {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+    @FocusedValue(\.focusedVM) private var vm
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("Neue virtuelle Maschine …") { openWindow(id: "assistant") }
+                .keyboardShortcut("n")
+            Button("Kontrollcenter") { openWindow(id: "control-center") }
+                .keyboardShortcut("c", modifiers: [.command, .option])
+        }
+        CommandMenu("Aktionen") {
+            Button(vm?.state == .paused ? "Fortsetzen" : "Starten") {
+                guard let vm else { return }
+                vm.state == .paused ? model.resume(vm) : model.start(vm)
+            }
+            .disabled(vm == nil || !(vm?.state == .stopped || vm?.state == .paused))
+            Button("Anhalten") { if let vm { model.pause(vm) } }
+                .disabled(vm?.state != .running)
+            Divider()
+            Button("Herunterfahren") { if let vm { model.shutdown(vm) } }
+                .disabled(vm == nil || vm?.state == .stopped)
+            Button("Neu starten") { if let vm { model.restart(vm) } }
+                .disabled(vm?.state != .running)
+            Button("Ausschalten") { if let vm { model.powerOff(vm) } }
+                .disabled(vm == nil || vm?.state == .stopped)
+            Divider()
+            Button("Strg+Alt+Entf senden") { if let vm { model.ctrlAltDelete(vm) } }
+                .disabled(vm?.state != .running)
+            Button("Installationsmedium auswerfen") { if let vm { model.ejectInstallMedia(vm) } }
+                .disabled(vm?.config.installMediaAttached != true)
+            Divider()
+            Button("Konfigurieren …") { if let vm { openWindow(id: "config", value: vm.id) } }
+                .disabled(vm == nil)
+                .keyboardShortcut(",", modifiers: [.command, .option])
+        }
+        CommandGroup(replacing: .help) {
+            Link("Moonvisor auf GitHub", destination: URL(string: "https://github.com/Luna-OS/moonvisor")!)
+            Link("Windows 11 ARM64 herunterladen", destination: URL(string: "https://www.microsoft.com/de-de/software-download/windows11arm64")!)
+        }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var model: AppModel?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { PreviewRenderer.runIfRequested() }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// Laufende VMs dürfen weiterlaufen (Moonvisor verbindet sich beim nächsten Start wieder),
+    /// oder werden auf Wunsch heruntergefahren.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let model, model.runningCount > 0 else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = model.runningCount == 1 ? "Eine VM läuft noch." : "\(model.runningCount) VMs laufen noch."
+        alert.informativeText = "Sie können im Hintergrund weiterlaufen. Moonvisor verbindet sich beim nächsten Öffnen wieder mit ihnen."
+        alert.addButton(withTitle: "Weiterlaufen lassen")
+        alert.addButton(withTitle: "Alle herunterfahren")
+        alert.addButton(withTitle: "Abbrechen")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return .terminateNow
+        case .alertSecondButtonReturn:
+            for entry in model.entries where entry.state != .stopped {
+                try? VMRunner.captureThumbnail(entry.bundle)
+                try? VMRunner.shutdown(entry.bundle)
+            }
+            return .terminateNow
+        default:
+            return .terminateCancel
+        }
+    }
+}
+
+extension View {
+    func errorAlert(_ model: AppModel) -> some View {
+        alert("Moonvisor", isPresented: Binding(
+            get: { model.errorMessage != nil },
+            set: { if !$0 { model.errorMessage = nil } }
+        )) {
+            Button("OK") { model.errorMessage = nil }
+        } message: {
+            Text(model.errorMessage ?? "")
+        }
+    }
+}
+
+struct SettingsView: View {
+    @Environment(AppModel.self) private var model
+    @AppStorage("vmFolder") private var vmFolder = ""
+
+    var body: some View {
+        Form {
+            Section("Virtuelle Maschinen") {
+                LabeledContent("Ordner") {
+                    HStack {
+                        Text(VMLibrary.defaultFolder.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                        Button("Ändern …") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseDirectories = true
+                            panel.canChooseFiles = false
+                            panel.canCreateDirectories = true
+                            if panel.runModal() == .OK, let url = panel.url {
+                                vmFolder = url.path
+                                model.reload()
+                            }
+                        }
+                    }
+                }
+            }
+            Section("Engine") {
+                let s = model.toolchainStatus
+                LabeledContent("QEMU (HVF)", value: s.qemu?.path ?? "fehlt")
+                LabeledContent("swtpm (TPM 2.0)", value: s.swtpm?.path ?? "fehlt")
+                LabeledContent("UEFI-Firmware", value: s.firmware?.path ?? "fehlt")
+                LabeledContent("Treiber-CD", value: DriverStore.cachedVirtioISO == nil ? "wird bei der ersten Windows-VM geladen" : "vorhanden")
+                if !s.isComplete {
+                    Button("Engine über Homebrew installieren") { model.installEngine() }
+                }
+                Button("Erneut prüfen") { model.reload() }
+            }
+            Section("Kommandozeile") {
+                Text("Mit `moonctl` lassen sich VMs auch im Terminal steuern, z. B. `moonctl list` oder `moonctl start \"Windows 11\"`.")
+                    .font(.system(size: 12))
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 560, height: 420)
+    }
+}
