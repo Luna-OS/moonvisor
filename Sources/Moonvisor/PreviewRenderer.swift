@@ -97,7 +97,30 @@ enum PreviewRenderer {
         client.start()
     }
 
+    /// `Moonvisor --test-driver-download <datei>`: lädt die Treiber-CD wie der Assistent, aber in eine Testdatei.
+    static func runDriverDownloadTestIfRequested() {
+        let args = CommandLine.arguments
+        guard let index = args.firstIndex(of: "--test-driver-download"), index + 1 < args.count else { return }
+        let target = URL(fileURLWithPath: args[index + 1])
+        Task {
+            var last = -1
+            do {
+                let url = try await DriverStore.download(to: target) { value in
+                    let percent = Int(value * 100)
+                    if percent / 20 != last / 20 { last = percent; print("… \(percent) %") }
+                }
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                print("✓ Treiber geladen: \(size) Bytes")
+                exit(0)
+            } catch {
+                print("✗ \(DriverStore.describe(error))")
+                exit(1)
+            }
+        }
+    }
+
     static func runIfRequested() {
+        runDriverDownloadTestIfRequested()
         runInputTestIfRequested()
         runResizeTestIfRequested()
         let args = CommandLine.arguments

@@ -469,8 +469,12 @@ struct AssistantView: View {
                 if source != .other && DriverStore.cachedVirtioISO == nil {
                     progressText = "Windows-Treiber werden geladen (virtio-win) …"
                     downloadProgress = 0
-                    _ = try await DriverStore.ensureVirtioISO { value in
-                        DispatchQueue.main.async { downloadProgress = value }
+                    do {
+                        _ = try await DriverStore.ensureVirtioISO { value in
+                            DispatchQueue.main.async { downloadProgress = value }
+                        }
+                    } catch {
+                        throw MoonError.processFailed("Treiber-Download", DriverStore.describe(error))
                     }
                     downloadProgress = nil
                 }

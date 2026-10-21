@@ -87,4 +87,11 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(config.tpmEnabled)
         XCTAssertEqual(config.networkMode, .shared)
     }
+
+    func testDriverRedirectsStayEncrypted() {
+        let insecure = URLRequest(url: URL(string: "http://fedorapeople.org/groups/virt/virtio-win/a.iso?x=1")!)
+        XCTAssertEqual(DriverStore.secureRedirect(insecure).url?.absoluteString, "https://fedorapeople.org/groups/virt/virtio-win/a.iso?x=1")
+        let secure = URLRequest(url: URL(string: "https://example.org/b.iso")!)
+        XCTAssertEqual(DriverStore.secureRedirect(secure).url, secure.url)
+    }
 }

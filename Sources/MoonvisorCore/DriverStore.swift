@@ -19,21 +19,33 @@ public enum DriverStore {
     public static func ensureVirtioISO(progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         if let cached = cachedVirtioISO { return cached }
         try FileManager.default.createDirectory(at: cacheFolder, withIntermediateDirectories: true)
-        let delegate = DownloadDelegate(progress: progress)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-        let (temp, response) = try await session.download(from: virtioURL)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw MoonError.processFailed("Treiber-Download", "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        return try await download(to: virtioISOURL, progress: progress)
+    }
+
+    public static func download(to destination: URL, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+        // Klassischer Download-Task statt `session.download(from:)`: nur so ruft URLSession den
+        // Fortschritts-Delegate auf.
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            let delegate = DownloadDelegate(destination: destination, progress: progress) { result in
+                continuation.resume(with: result)
+            }
+            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+            session.downloadTask(with: virtioURL).resume()
+            session.finishTasksAndInvalidate()
         }
-        try? FileManager.default.removeItem(at: virtioISOURL)
-        try FileManager.default.moveItem(at: temp, to: virtioISOURL)
-        return virtioISOURL
     }
 
     final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+        let destination: URL
         let progress: @Sendable (Double) -> Void
-        init(progress: @escaping @Sendable (Double) -> Void) { self.progress = progress }
+        private var completion: ((Result<URL, Error>) -> Void)?
+        private var moveError: Error?
+
+        init(destination: URL, progress: @escaping @Sendable (Double) -> Void, completion: @escaping (Result<URL, Error>) -> Void) {
+            self.destination = destination
+            self.progress = progress
+            self.completion = completion
+        }
 
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
                         totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
@@ -41,6 +53,60 @@ public enum DriverStore {
             progress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
         }
 
-        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
+        /// Die temporäre Datei existiert nur während dieses Aufrufs – daher hier verschieben.
+        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+            let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200 else {
+                moveError = MoonError.processFailed("Treiber-Download", "HTTP \(status)")
+                return
+            }
+            do {
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.moveItem(at: location, to: destination)
+            } catch {
+                moveError = error
+            }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            let result: Result<URL, Error>
+            if let error = error ?? moveError {
+                result = .failure(error)
+            } else {
+                result = .success(destination)
+            }
+            completion?(result)
+            completion = nil
+        }
+
+        /// fedorapeople.org leitet auf `http://` um. Apps dürfen unverschlüsseltes HTTP nicht laden
+        /// (App Transport Security) – und Treiber sollen ohnehin nur verschlüsselt kommen.
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(DriverStore.secureRedirect(request))
+        }
+    }
+
+    static func secureRedirect(_ request: URLRequest) -> URLRequest {
+        guard let url = request.url, url.scheme?.lowercased() == "http",
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return request }
+        components.scheme = "https"
+        var secure = request
+        secure.url = components.url
+        return secure
+    }
+
+    /// Übersetzt Netzwerkfehler in verständliche Hinweise.
+    public static func describe(_ error: Error) -> String {
+        let ns = error as NSError
+        guard ns.domain == NSURLErrorDomain else { return error.localizedDescription }
+        switch ns.code {
+        case NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost:
+            return "Keine Internetverbindung. Die Windows-Treiber (ca. 850 MB) werden einmalig heruntergeladen."
+        case NSURLErrorTimedOut, NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost:
+            return "Der Treiber-Server (fedorapeople.org) ist gerade nicht erreichbar. Bitte später erneut versuchen."
+        default:
+            return "Die Windows-Treiber konnten nicht geladen werden: \(error.localizedDescription)"
+        }
     }
 }
