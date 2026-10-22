@@ -69,8 +69,10 @@ public enum GraphicsMode: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    /// Im Menü wählbar. DirectX kommt hinzu, sobald das VM-Fenster die 3D-Ausgabe (SPICE/IOSurface) anzeigt.
-    public static var selectable: [GraphicsMode] { [.automatic, .basic, .virtio] }
+    /// Im Menü wählbar. DirectX gibt es nur mit der Moonvisor-Engine.
+    public static func selectable(directX: Bool) -> [GraphicsMode] {
+        directX ? [.automatic, .basic, .virtio, .directX] : [.automatic, .basic, .virtio]
+    }
 }
 
 /// Ressourcenprofil wie im Installationsassistenten.

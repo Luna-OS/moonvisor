@@ -14,6 +14,10 @@ final class VMEntry: Identifiable {
     var toolsVersion: Int?
     /// Laufende Dateiübertragungen in die VM.
     var transfers = 0
+    /// Aktiver Grafiktreiber im Gast (viogpu3d = DirectX, viogpudo = einfach), von den Moonvisor Tools gemeldet.
+    var gpuDriver: String?
+    /// Moonvisor richtet gerade den DirectX-Treiber im Gast ein.
+    var directXSetupRunning = false
     let display = DisplaySession()
     @ObservationIgnored var agent: AgentChannel?
     @ObservationIgnored var displaySocket: String?
@@ -111,9 +115,16 @@ final class AppModel {
                     if entry.state == .stopping && state == .running { continue }
                     entry.state = state
                     if let info {
-                        if entry.displaySocket != info.sockets.vnc {
-                            entry.displaySocket = info.sockets.vnc
-                            entry.display.connect(socketPath: info.sockets.vnc)
+                        // Im DirectX-Modus kommt das Bild über SPICE (IOSurface), sonst über VNC.
+                        let spice = info.config?.graphics == .directX && FileManager.default.fileExists(atPath: info.sockets.spice)
+                        let socket = spice ? info.sockets.spice : info.sockets.vnc
+                        if entry.displaySocket != socket {
+                            entry.displaySocket = socket
+                            if spice {
+                                entry.display.connect(spicePath: socket)
+                            } else {
+                                entry.display.connect(socketPath: socket)
+                            }
                             self.connectAgent(entry, path: info.sockets.agent)
                         }
                     } else if entry.displaySocket != nil {
@@ -123,6 +134,8 @@ final class AppModel {
                         entry.agent = nil
                         entry.display.agent = nil
                         entry.toolsActive = false
+                        entry.gpuDriver = nil
+                        entry.directXSetupRunning = false
                     }
                     entry.loadThumbnail()
                 }
@@ -160,6 +173,21 @@ final class AppModel {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
                 self.pasteboardCount = NSPasteboard.general.changeCount
+            case "gpu":
+                entry.gpuDriver = argument
+                // DirectX gewählt, Triton aber noch nicht aktiv: einmal pro Sitzung einrichten lassen.
+                if entry.config.graphics == .directX, argument != "viogpu3d", !entry.directXSetupRunning,
+                   (entry.toolsVersion ?? 0) >= 5, DriverStore.cachedDirectXISO != nil {
+                    entry.directXSetupRunning = true
+                    entry.agent?.send("install-3d")
+                } else if argument == "viogpu3d" {
+                    entry.directXSetupRunning = false
+                }
+            case "gpu-setup":
+                if argument == "missing-tools" {
+                    entry.directXSetupRunning = false
+                    self.errorMessage = "Für DirectX fehlen in Windows die aktuellen Moonvisor Tools. Öffne die CD „MOONTOOLS“ und führe „Moonvisor Tools installieren“ aus."
+                }
             case "img":
                 guard entry.config.sharedClipboard, let png = Data(base64Encoded: argument) else { return }
                 NSPasteboard.general.clearContents()
@@ -265,10 +293,35 @@ final class AppModel {
         }
         entry.state = .starting
         perform(entry, "Startet …") { bundle in
+            if entry.config.graphics == .directX && entry.config.guestOS == .windows11 && DriverStore.cachedDirectXISO == nil {
+                try Self.loadDirectXDrivers(for: entry)
+            }
             let toolchain = try Toolchain.locate(requireTPM: entry.config.tpmEnabled)
             try VMRunner.start(bundle: bundle, toolchain: toolchain) { [weak self] _ in
                 DispatchQueue.main.async { self?.refreshStates() }
             }
+        }
+    }
+
+    /// Lädt die DirectX-Treiber-CD vor dem ersten Start im DirectX-Modus (läuft auf der Arbeits-Queue).
+    private static func loadDirectXDrivers(for entry: VMEntry) throws {
+        let done = DispatchSemaphore(value: 0)
+        final class Outcome: @unchecked Sendable { var error: Error? }
+        let outcome = Outcome()
+        Task {
+            do {
+                _ = try await DriverStore.ensureDirectXISO { value in
+                    DispatchQueue.main.async { entry.busyMessage = "DirectX-Treiber werden geladen … \(Int(value * 100)) %" }
+                }
+            } catch {
+                outcome.error = error
+            }
+            done.signal()
+        }
+        done.wait()
+        DispatchQueue.main.async { entry.busyMessage = "Startet …" }
+        if let error = outcome.error {
+            throw MoonError.processFailed("DirectX-Treiber", DriverStore.describe(error))
         }
     }
 

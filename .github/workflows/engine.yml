@@ -25,6 +25,12 @@ env:
 permissions:
   contents: write
 
+# Nur ein Engine-Build gleichzeitig: ein laufender Build wird nicht abgebrochen (er füllt den Cache),
+# neue Anstöße warten und ersetzen einander.
+concurrency:
+  group: engine
+  cancel-in-progress: false
+
 jobs:
   engine:
     runs-on: macos-26

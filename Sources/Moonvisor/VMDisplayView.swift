@@ -1,13 +1,19 @@
 import MoonvisorCore
 import AppKit
 import Carbon.HIToolbox
+import IOSurface
 import SwiftUI
 
 /// Zeigt den Bildschirm der VM und leitet Tastatur und Maus an den Gast weiter.
 final class VMDisplayNSView: NSView {
-    var client: VNCClient? {
+    var client: DisplayClient? {
         didSet { releaseAllKeys(oldClient: oldValue) }
     }
+    /// Mauszeiger des Gasts (SPICE). Bei VNC zeichnet der Gast ihn selbst ins Bild.
+    var guestCursor: NSCursor? {
+        didSet { window?.invalidateCursorRects(for: self) }
+    }
+    private var usesGuestCursor = false
     var commandAsControl = false
     /// Gastauflösung an die Fenstergröße anpassen (nur mit virtio-GPU möglich).
     var autoResize = false
@@ -41,9 +47,32 @@ final class VMDisplayNSView: NSView {
     override var isFlipped: Bool { true }
 
     func show(_ image: CGImage) {
+        usesGuestCursor = false
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer?.contents = image
+        CATransaction.commit()
+    }
+
+    /// Bildfläche aus dem DirectX-Modus. Core Animation zeigt die IOSurface direkt an.
+    func show(surface: IOSurfaceRef) {
+        if !usesGuestCursor {
+            usesGuestCursor = true
+            window?.invalidateCursorRects(for: self)
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.contents = surface
+        CATransaction.commit()
+    }
+
+    /// Inhalt der IOSurface hat sich geändert: neu zusammensetzen lassen.
+    func refreshSurface() {
+        guard let surface = layer?.contents else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.contents = nil
+        layer?.contents = surface
         CATransaction.commit()
     }
 
@@ -55,14 +84,18 @@ final class VMDisplayNSView: NSView {
         trackingArea = area
     }
 
+    /// Bei VNC zeichnet der Gast seinen Mauszeiger selbst; bei SPICE kommt er als eigenes Bild.
+    private var cursorInImage: NSCursor {
+        usesGuestCursor ? (guestCursor ?? Self.invisibleCursor) : Self.invisibleCursor
+    }
+
     override func resetCursorRects() {
-        // Der Gast zeichnet seinen eigenen Mauszeiger; der Mac-Zeiger wird im Bildschirm ausgeblendet.
-        addCursorRect(imageRect(), cursor: Self.invisibleCursor)
+        addCursorRect(imageRect(), cursor: cursorInImage)
     }
 
     override func cursorUpdate(with event: NSEvent) {
         if imageRect().contains(convert(event.locationInWindow, from: nil)) {
-            Self.invisibleCursor.set()
+            cursorInImage.set()
         } else {
             NSCursor.arrow.set()
         }
@@ -234,7 +267,7 @@ final class VMDisplayNSView: NSView {
         return super.resignFirstResponder()
     }
 
-    private func releaseAllKeys(oldClient: VNCClient?) {
+    private func releaseAllKeys(oldClient: DisplayClient?) {
         for code in pressed { oldClient?.sendKey(scancode: code, down: false) }
         pressed.removeAll()
         buttons = 0
@@ -267,7 +300,7 @@ struct VMDisplayView: NSViewRepresentable {
     }
 }
 
-/// Verbindet einen Bildschirm-View mit der VNC-Sitzung einer laufenden VM.
+/// Verbindet einen Bildschirm-View mit der Sitzung einer laufenden VM (VNC, im DirectX-Modus SPICE).
 @Observable
 final class DisplaySession {
     private(set) var connected = false
@@ -275,13 +308,20 @@ final class DisplaySession {
     var lastError: String?
     @ObservationIgnored weak var view: VMDisplayNSView?
     @ObservationIgnored var agent: AgentChannel?
-    @ObservationIgnored private var client: VNCClient?
+    @ObservationIgnored private var client: DisplayClient?
     @ObservationIgnored private var lastImage: CGImage?
+    @ObservationIgnored private var lastSurface: IOSurfaceRef?
+    @ObservationIgnored private var guestCursor: NSCursor?
 
     func attach(_ view: VMDisplayNSView) {
         self.view = view
         view.client = client
-        if let lastImage { view.show(lastImage) }
+        view.guestCursor = guestCursor
+        if let lastSurface {
+            view.show(surface: lastSurface)
+        } else if let lastImage {
+            view.show(lastImage)
+        }
     }
 
     func connect(socketPath: String) {
@@ -291,10 +331,7 @@ final class DisplaySession {
             guard let self else { return }
             self.connected = true
             self.lastImage = image
-            if let client, self.resolution != CGSize(width: client.width, height: client.height) {
-                self.resolution = CGSize(width: client.width, height: client.height)
-                self.view?.window?.invalidateCursorRects(for: self.view!)
-            }
+            if let client { self.updateResolution(width: client.width, height: client.height) }
             self.view?.show(image)
         }
         client.onDisconnect = { [weak self] error in
@@ -306,10 +343,47 @@ final class DisplaySession {
         client.start()
     }
 
+    /// DirectX-Modus: Bild als IOSurface über SPICE.
+    func connect(spicePath: String) {
+        disconnect()
+        let client = SpiceClient(path: spicePath)
+        client.onScanout = { [weak self, weak client] surface in
+            guard let self else { return }
+            self.connected = true
+            self.lastSurface = surface
+            if let client { self.updateResolution(width: client.width, height: client.height) }
+            self.view?.show(surface: surface)
+        }
+        client.onDraw = { [weak self] in
+            self?.view?.refreshSurface()
+        }
+        client.onCursor = { [weak self] cursor in
+            self?.guestCursor = cursor
+            self?.view?.guestCursor = cursor
+        }
+        client.onDisconnect = { [weak self] error in
+            self?.connected = false
+            if let error { self?.lastError = error.localizedDescription }
+        }
+        self.client = client
+        view?.client = client
+        client.start()
+    }
+
+    private func updateResolution(width: Int, height: Int) {
+        let size = CGSize(width: width, height: height)
+        guard resolution != size else { return }
+        resolution = size
+        if let view { view.window?.invalidateCursorRects(for: view) }
+    }
+
     func disconnect() {
         client?.stop()
         client = nil
         view?.client = nil
+        lastSurface = nil
+        guestCursor = nil
+        view?.guestCursor = nil
         connected = false
     }
 
