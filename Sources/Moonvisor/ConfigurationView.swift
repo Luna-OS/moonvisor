@@ -40,6 +40,7 @@ struct ConfigurationView: View {
     @State private var message: String?
     @State private var newHostPort = ""
     @State private var newGuestPort = ""
+    @State private var vmnetReady: Set<String> = []
 
     private var running: Bool { entry.state != .stopped }
     private var hostCPUs: Int { Toolchain.hostCPUCount }
@@ -165,7 +166,9 @@ struct ConfigurationView: View {
                 row("Grafik") {
                     VStack(alignment: .leading, spacing: 4) {
                         Picker("", selection: $draft.graphics) {
-                            ForEach(GraphicsMode.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                            ForEach(GraphicsMode.selectable + (draft.graphics == .directX ? [.directX] : []), id: \.self) {
+                                Text($0.displayName).tag($0)
+                            }
                         }
                         .labelsHidden()
                         .fixedSize()
@@ -225,6 +228,18 @@ struct ConfigurationView: View {
                     }
                     .labelsHidden()
                 }
+                if draft.networkMode == .bridged {
+                    row("Schnittstelle") {
+                        Picker("", selection: $draft.bridgeInterface) {
+                            ForEach(VMNet.interfaces(), id: \.self) { Text($0).tag($0) }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                }
+                if let service = VMNet.service(for: draft) {
+                    row("Netzwerkdienst") { vmnetStatus(service) }
+                }
                 row("MAC-Adresse") {
                     HStack {
                         Text(draft.macAddress).font(.system(size: 12, design: .monospaced)).foregroundStyle(Moon.textSecondary)
@@ -232,31 +247,58 @@ struct ConfigurationView: View {
                     }
                 }
             }
-            section(title: "Portweiterleitung (Mac → VM)") {
-                ForEach(draft.portForwards) { fwd in
-                    HStack {
-                        Text("\(fwd.proto.uppercased())  localhost:\(fwd.hostPort)  →  VM:\(fwd.guestPort)")
-                            .font(.system(size: 12, design: .monospaced)).foregroundStyle(Moon.text)
-                        Spacer()
-                        Button { draft.portForwards.removeAll { $0 == fwd } } label: { Image(systemName: "minus.circle") }
-                            .buttonStyle(.plain).foregroundStyle(Moon.rose)
+            if draft.networkMode == .shared {
+                portForwarding
+            }
+        }
+    }
+
+    private func vmnetStatus(_ service: VMNet.Service) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if service.isRunning || vmnetReady.contains(service.name) {
+                Label("Eingerichtet", systemImage: "checkmark.circle.fill").foregroundStyle(Moon.mint)
+            } else {
+                HStack {
+                    Text("Noch nicht eingerichtet").foregroundStyle(Moon.textSecondary)
+                    Button("Einrichten …") {
+                        if model.installVMNet(service) { vmnetReady.insert(service.name) }
                     }
                 }
+            }
+            Text(service.mode == .bridged
+                 ? "Die VM erscheint im lokalen Netz wie ein eigener Rechner und bekommt ihre Adresse vom Router."
+                 : "Die VM bekommt eine eigene Adresse (192.168.105.x) und ist vom Mac direkt erreichbar, z. B. per Remotedesktop – ohne Portweiterleitung.")
+                .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
+            Text("Einmalig nötig: macOS fragt nach einem Administrator-Passwort, um den Netzwerkdienst einzurichten.")
+                .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
+        }
+    }
+
+    private var portForwarding: some View {
+        section(title: "Portweiterleitung (Mac → VM)") {
+            ForEach(draft.portForwards) { fwd in
                 HStack {
-                    TextField("Mac-Port", text: $newHostPort).textFieldStyle(.roundedBorder).frame(width: 90)
-                    Image(systemName: "arrow.right").foregroundStyle(Moon.textMuted)
-                    TextField("VM-Port", text: $newGuestPort).textFieldStyle(.roundedBorder).frame(width: 90)
-                    Button("Hinzufügen") {
-                        if let h = Int(newHostPort), let g = Int(newGuestPort), (1...65535).contains(h), (1...65535).contains(g) {
-                            draft.portForwards.append(PortForward(hostPort: h, guestPort: g))
-                            newHostPort = ""; newGuestPort = ""
-                        }
-                    }
+                    Text("\(fwd.proto.uppercased())  localhost:\(fwd.hostPort)  →  VM:\(fwd.guestPort)")
+                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Moon.text)
                     Spacer()
-                    if draft.guestOS == .windows11 && !draft.portForwards.contains(where: { $0.guestPort == 3389 }) {
-                        Button("Remotedesktop (3389)") { draft.portForwards.append(PortForward(hostPort: 3389, guestPort: 3389)) }
-                            .buttonStyle(.link)
+                    Button { draft.portForwards.removeAll { $0 == fwd } } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.plain).foregroundStyle(Moon.rose)
+                }
+            }
+            HStack {
+                TextField("Mac-Port", text: $newHostPort).textFieldStyle(.roundedBorder).frame(width: 90)
+                Image(systemName: "arrow.right").foregroundStyle(Moon.textMuted)
+                TextField("VM-Port", text: $newGuestPort).textFieldStyle(.roundedBorder).frame(width: 90)
+                Button("Hinzufügen") {
+                    if let h = Int(newHostPort), let g = Int(newGuestPort), (1...65535).contains(h), (1...65535).contains(g) {
+                        draft.portForwards.append(PortForward(hostPort: h, guestPort: g))
+                        newHostPort = ""; newGuestPort = ""
                     }
+                }
+                Spacer()
+                if draft.guestOS == .windows11 && !draft.portForwards.contains(where: { $0.guestPort == 3389 }) {
+                    Button("Remotedesktop (3389)") { draft.portForwards.append(PortForward(hostPort: 3389, guestPort: 3389)) }
+                        .buttonStyle(.link)
                 }
             }
         }
@@ -269,12 +311,12 @@ struct ConfigurationView: View {
                     .toggleStyle(.switch).tint(Moon.accent)
             }
             row("Zwischenablage") {
-                Toggle("Text-Zwischenablage mit der VM teilen", isOn: $draft.sharedClipboard)
+                Toggle("Zwischenablage mit der VM teilen (Text, Bilder, Dateien)", isOn: $draft.sharedClipboard)
                     .toggleStyle(.switch).tint(Moon.accent)
             }
             row("Moonvisor Tools") {
-                Text(entry.toolsActive ? "Aktiv – Auflösung und Zwischenablage werden abgeglichen." : "Nicht verbunden. In Windows die CD „MOONTOOLS“ öffnen und „Moonvisor Tools installieren“ ausführen.")
-                    .font(.system(size: 12)).foregroundStyle(entry.toolsActive ? Moon.mint : Moon.textMuted)
+                Text(toolsStatus)
+                    .font(.system(size: 12)).foregroundStyle(entry.toolsActive && !toolsOutdated ? Moon.mint : Moon.textMuted)
             }
             row("Tastatur") {
                 VStack(alignment: .leading, spacing: 4) {
@@ -285,6 +327,18 @@ struct ConfigurationView: View {
                 }
             }
         }
+    }
+
+    private var toolsOutdated: Bool { (entry.toolsVersion ?? 0) < GuestTools.version }
+
+    private var toolsStatus: String {
+        if !entry.toolsActive {
+            return "Nicht verbunden. In Windows die CD „MOONTOOLS“ öffnen und „Moonvisor Tools installieren“ ausführen."
+        }
+        if toolsOutdated {
+            return "Veraltet – Text-Zwischenablage geht, für Dateien, Bilder und freie Auflösung in Windows „Moonvisor Tools installieren“ von der CD „MOONTOOLS“ erneut ausführen."
+        }
+        return "Aktiv – Auflösung, Zwischenablage und Drag & Drop werden abgeglichen."
     }
 
     private var snapshotsTab: some View {
@@ -317,8 +371,12 @@ struct ConfigurationView: View {
                 Button("Wiederherstellen") {
                     if let name = snapshotSelection {
                         snapshotAction {
-                            if try Snapshots.revert(entry.bundle, name: name, toolchain: $0) {
-                                DispatchQueue.main.async { model.start(entry) }
+                            let restart = try Snapshots.revert(entry.bundle, name: name, toolchain: $0)
+                            DispatchQueue.main.async {
+                                // Der Schnappschuss kann eine andere Hardware mitbringen.
+                                model.reload()
+                                if let fresh = try? entry.bundle.loadConfig() { draft = fresh }
+                                if restart { model.start(entry) }
                             }
                         }
                     }

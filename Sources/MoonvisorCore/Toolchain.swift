@@ -6,27 +6,42 @@ public enum ToolchainError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .missing(let items):
-            return "Folgende Komponenten fehlen: \(items.joined(separator: ", ")). Installiere sie mit: brew install qemu swtpm"
+            return "Die Virtualisierungs-Engine ist nicht vollständig (\(items.joined(separator: ", ")) fehlt). Lade sie im Kontrollcenter herunter."
         }
     }
 }
 
 /// Findet die Virtualisierungs-Engine (QEMU mit Hypervisor.framework), swtpm und die UEFI-Firmware.
 ///
-/// Gesucht wird zuerst im App-Bundle (`Contents/Resources/engine`), dann in Homebrew.
+/// Gesucht wird zuerst in der von Moonvisor heruntergeladenen Engine (`EngineStore`), dann im App-Bundle
+/// (`Contents/Resources/engine`). Eine vorhandene Homebrew-Installation dient Entwicklern als Rückfallebene.
+/// Alle Bestandteile kommen immer aus demselben Ordner, damit nichts gemischt wird.
 public struct Toolchain: Sendable {
     public var qemuSystem: URL
     public var qemuImg: URL
     public var swtpm: URL?
     public var firmwareCode: URL
     public var firmwareVarsTemplate: URL
+    /// Datenverzeichnis von QEMU (Firmware, Option-ROMs), wird mit `-L` übergeben.
+    public var dataDirectory: URL?
+    /// Engine-Ordner (bin/, Frameworks/, libexec/), nur bei der Moonvisor-Engine gesetzt.
+    public var enginePrefix: URL?
 
-    public static let brewInstallCommand = "brew install qemu swtpm"
+    /// DirectX 11 über Neptune/DXMT ist nur mit der Moonvisor-Engine möglich.
+    public var supportsDirectX: Bool {
+        guard let enginePrefix else { return false }
+        let fm = FileManager.default
+        return fm.fileExists(atPath: enginePrefix.appendingPathComponent("Frameworks/dxmt-native.framework").path)
+            && fm.isExecutableFile(atPath: enginePrefix.appendingPathComponent("libexec/virgl_render_server").path)
+    }
 
     static var searchPrefixes: [URL] {
         var prefixes: [URL] = []
         if let env = ProcessInfo.processInfo.environment["MOONVISOR_ENGINE"] {
             prefixes.append(URL(fileURLWithPath: env))
+        }
+        if let engine = EngineStore.installedURL {
+            prefixes.append(engine)
         }
         if let resources = Bundle.main.resourceURL {
             prefixes.append(resources.appendingPathComponent("engine"))
@@ -41,54 +56,61 @@ public struct Toolchain: Sendable {
         public var qemuImg: URL?
         public var swtpm: URL?
         public var firmware: URL?
-        public var homebrew: URL?
+        public var prefix: URL?
 
         public var isComplete: Bool { qemu != nil && qemuImg != nil && swtpm != nil && firmware != nil }
+        /// Moonvisor-Engine (Werkzeuge als Frameworks, mit 3D-Bausteinen) statt z. B. Homebrew.
+        public var isMoonvisorEngine: Bool {
+            guard let prefix else { return false }
+            return FileManager.default.fileExists(atPath: prefix.appendingPathComponent("Frameworks").path)
+        }
 
         public var missing: [String] {
             var items: [String] = []
             if qemu == nil || qemuImg == nil { items.append("QEMU") }
-            if firmware == nil { items.append("UEFI-Firmware (edk2)") }
+            if firmware == nil { items.append("UEFI-Firmware") }
             if swtpm == nil { items.append("swtpm (TPM 2.0)") }
             return items
         }
     }
 
-    public static func status() -> Status {
+    static func status(prefix: URL) -> Status {
         let fm = FileManager.default
-        func find(_ relative: String) -> URL? {
-            for prefix in searchPrefixes {
-                let candidate = prefix.appendingPathComponent(relative)
-                if fm.isExecutableFile(atPath: candidate.path) || (relative.hasSuffix(".fd") && fm.fileExists(atPath: candidate.path)) {
-                    return candidate
-                }
-            }
-            return nil
+        func executable(_ relative: String) -> URL? {
+            let url = prefix.appendingPathComponent(relative)
+            return fm.isExecutableFile(atPath: url.path) ? url : nil
         }
-        let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-            .first { fm.isExecutableFile(atPath: $0) }
-            .map { URL(fileURLWithPath: $0) }
+        let firmware = prefix.appendingPathComponent("share/qemu/edk2-aarch64-code.fd")
         return Status(
-            qemu: find("bin/qemu-system-aarch64"),
-            qemuImg: find("bin/qemu-img"),
-            swtpm: find("bin/swtpm"),
-            firmware: find("share/qemu/edk2-aarch64-code.fd"),
-            homebrew: brew
+            qemu: executable("bin/qemu-system-aarch64"),
+            qemuImg: executable("bin/qemu-img"),
+            swtpm: executable("bin/swtpm"),
+            firmware: fm.fileExists(atPath: firmware.path) ? firmware : nil,
+            prefix: prefix
         )
+    }
+
+    public static func status() -> Status {
+        let all = searchPrefixes.map { status(prefix: $0) }
+        return all.first { $0.isComplete }
+            ?? all.first { $0.qemu != nil }
+            ?? Status()
     }
 
     public static func locate(requireTPM: Bool = true) throws -> Toolchain {
         let s = status()
         var missing: [String] = []
         if s.qemu == nil || s.qemuImg == nil { missing.append("QEMU") }
-        if s.firmware == nil { missing.append("UEFI-Firmware (edk2)") }
+        if s.firmware == nil { missing.append("UEFI-Firmware") }
         if requireTPM && s.swtpm == nil { missing.append("swtpm (TPM 2.0)") }
         guard missing.isEmpty, let qemu = s.qemu, let img = s.qemuImg, let fw = s.firmware else {
-            throw ToolchainError.missing(missing)
+            throw ToolchainError.missing(missing.isEmpty ? ["QEMU"] : missing)
         }
         // Die ARM-Variablenvorlage hat dasselbe Layout wie die aarch64-Firmware.
-        let vars = fw.deletingLastPathComponent().appendingPathComponent("edk2-arm-vars.fd")
-        return Toolchain(qemuSystem: qemu, qemuImg: img, swtpm: s.swtpm, firmwareCode: fw, firmwareVarsTemplate: vars)
+        let data = fw.deletingLastPathComponent()
+        let vars = data.appendingPathComponent("edk2-arm-vars.fd")
+        return Toolchain(qemuSystem: qemu, qemuImg: img, swtpm: s.swtpm, firmwareCode: fw, firmwareVarsTemplate: vars,
+                         dataDirectory: data, enginePrefix: s.isMoonvisorEngine ? s.prefix : nil)
     }
 
     /// Legt die UEFI-Variablen einer VM aus der Vorlage an bzw. wandelt rohe Variablen in qcow2 um.

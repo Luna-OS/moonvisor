@@ -42,7 +42,8 @@ struct VMWindowContent: View {
             Color.black.ignoresSafeArea()
             if entry.state != .stopped {
                 VMDisplayView(session: entry.display, commandAsControl: entry.config.commandAsControl,
-                              autoResize: entry.config.usesVirtioGPU)
+                              autoResize: entry.config.usesVirtioGPU,
+                              onDropFiles: entry.toolsActive ? { urls in model.dropFiles(urls, into: entry) } : nil)
                     .ignoresSafeArea()
                 if !entry.display.connected {
                     overlay {
@@ -76,6 +77,7 @@ struct VMWindowContent: View {
 
     private var subtitle: String {
         if let busy = entry.busyMessage { return busy }
+        if entry.transfers > 0 { return "Dateien werden in die VM übertragen …" }
         if entry.display.connected, entry.display.resolution.width > 0 {
             return "\(entry.state.displayName) · \(Int(entry.display.resolution.width))×\(Int(entry.display.resolution.height))"
         }

@@ -76,11 +76,55 @@ public enum Snapshots {
         return cleaned.isEmpty ? "Schnappschuss" : cleaned
     }
 
+    // MARK: Hardware je Schnappschuss
+
+    /// Ein Schnappschuss mit Arbeitsspeicher lässt sich nur mit derselben Hardware laden. Moonvisor merkt sie sich
+    /// deshalb beim Erstellen und stellt sie beim Wiederherstellen zurück (wie Parallels).
+    static func hardwareURL(_ bundle: VMBundle, _ tag: String) -> URL {
+        let file = tag.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? tag
+        return bundle.snapshotConfigsURL.appendingPathComponent(file + ".json")
+    }
+
+    static func saveHardware(_ bundle: VMBundle, tag: String) throws {
+        // Maßgeblich ist die Hardware, mit der die laufende VM gestartet wurde.
+        let config = try VMRunner.runtime(of: bundle)?.config ?? bundle.loadConfig()
+        try FileManager.default.createDirectory(at: bundle.snapshotConfigsURL, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(config).write(to: hardwareURL(bundle, tag), options: .atomic)
+    }
+
+    static func savedHardware(_ bundle: VMBundle, tag: String) -> VMConfig? {
+        guard let data = try? Data(contentsOf: hardwareURL(bundle, tag)) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(VMConfig.self, from: data)
+    }
+
+    /// Übernimmt alles, was die Geräte der VM bestimmt. Name, Notizen, Portweiterleitungen usw. bleiben.
+    public static func applyHardware(from snapshot: VMConfig, to config: inout VMConfig) {
+        config.cpuCount = snapshot.cpuCount
+        config.memoryMB = snapshot.memoryMB
+        config.graphics = snapshot.graphics
+        config.soundEnabled = snapshot.soundEnabled
+        config.tpmEnabled = snapshot.tpmEnabled
+        config.macAddress = snapshot.macAddress
+        config.installMediaAttached = snapshot.installMediaAttached
+        config.installMediaPath = snapshot.installMediaPath
+        config.attachDriversDisc = snapshot.attachDriversDisc
+        // Ob es eine Netzwerkkarte gibt, gehört zur Hardware; die Art der Verbindung nicht.
+        if (snapshot.networkMode == .disconnected) != (config.networkMode == .disconnected) {
+            config.networkMode = snapshot.networkMode
+        }
+    }
+
     /// Läuft die VM, werden Arbeitsspeicher und Geräte mitgesichert (die VM pausiert dafür kurz).
     public static func create(_ bundle: VMBundle, name: String, toolchain: Toolchain) throws {
         let tag = sanitize(name)
         if VMRunner.runtime(of: bundle) != nil {
             try hmp(bundle, "savevm \(tag)")
+            try? saveHardware(bundle, tag: tag)
             return
         }
         for image in images(bundle) { try run(toolchain, ["snapshot", "-c", tag, image.path]) }
@@ -96,6 +140,9 @@ public enum Snapshots {
         let running = VMRunner.runtime(of: bundle) != nil
         if hasState {
             var config = try bundle.loadConfig()
+            if let hardware = savedHardware(bundle, tag: name) {
+                applyHardware(from: hardware, to: &config)
+            }
             config.resumeSnapshot = name
             try bundle.saveConfig(config)
             if running { try VMRunner.powerOff(bundle) }
@@ -109,6 +156,7 @@ public enum Snapshots {
     }
 
     public static func delete(_ bundle: VMBundle, name: String, toolchain: Toolchain) throws {
+        defer { try? FileManager.default.removeItem(at: hardwareURL(bundle, name)) }
         if VMRunner.runtime(of: bundle) != nil {
             try hmp(bundle, "delvm \(name)")
             return

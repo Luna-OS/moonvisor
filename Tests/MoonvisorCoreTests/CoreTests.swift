@@ -94,4 +94,86 @@ final class CoreTests: XCTestCase {
         let secure = URLRequest(url: URL(string: "https://example.org/b.iso")!)
         XCTAssertEqual(DriverStore.secureRedirect(secure).url, secure.url)
     }
+
+    private func toolchain(engine: URL? = nil) -> Toolchain {
+        Toolchain(qemuSystem: URL(fileURLWithPath: "/q"), qemuImg: URL(fileURLWithPath: "/qi"), swtpm: nil,
+                  firmwareCode: URL(fileURLWithPath: "/fw/code.fd"), firmwareVarsTemplate: URL(fileURLWithPath: "/fw/vars.fd"),
+                  dataDirectory: URL(fileURLWithPath: "/fw"), enginePrefix: engine)
+    }
+
+    func testVMNetUsesStreamSocketAndDataDirectory() {
+        var config = VMConfig(name: "Netz", guestOS: .windows11, cpuCount: 2, memoryMB: 4096, diskSizeGB: 64)
+        config.networkMode = .bridged
+        config.bridgeInterface = "en1"
+        let bundle = VMBundle(url: URL(fileURLWithPath: "/vms/Netz.moonvm"))
+        let args = QEMUCommand(config: config, bundle: bundle, toolchain: toolchain(), sockets: RuntimeSockets(directory: "/t/mv")).arguments
+        XCTAssertTrue(args.contains("stream,id=net0,server=off,addr.type=unix,addr.path=/var/run/moonvisor-vmnet-bridged-en1.sock"))
+        XCTAssertFalse(args.contains { $0.contains("hostfwd") })
+        XCTAssertEqual(args[args.firstIndex(of: "-L")! + 1], "/fw")
+    }
+
+    func testDirectXFallsBackWithoutEngine() {
+        var config = VMConfig(name: "3D", guestOS: .windows11, cpuCount: 2, memoryMB: 4096, diskSizeGB: 64)
+        config.graphics = .directX
+        let bundle = VMBundle(url: URL(fileURLWithPath: "/vms/3D.moonvm"))
+        let command = QEMUCommand(config: config, bundle: bundle, toolchain: toolchain(), sockets: RuntimeSockets(directory: "/t/mv"))
+        XCTAssertEqual(command.display, .virtioGPU)
+        XCTAssertFalse(command.arguments.contains("-spice"))
+        XCTAssertNil(command.environment["NPT_BACKEND"])
+    }
+
+    func testVMNetInstallScriptAndPlist() throws {
+        var config = VMConfig(name: "Netz", guestOS: .windows11, cpuCount: 2, memoryMB: 4096, diskSizeGB: 64)
+        config.networkMode = .vmnet
+        let service = try XCTUnwrap(VMNet.service(for: config))
+        XCTAssertEqual(service.socketPath, "/var/run/moonvisor-vmnet-shared.sock")
+        XCTAssertTrue(service.arguments.contains("--vmnet-gateway=192.168.105.1"))
+        _ = try XMLDocument(xmlString: VMNet.plist(for: service))
+        let script = VMNet.installScript(for: service, engine: URL(fileURLWithPath: "/Users/luna/Library/Application Support/Moonvisor/Engine/1"))
+        XCTAssertTrue(script.contains("launchctl bootstrap system '/Library/LaunchDaemons/io.github.luna-os.moonvisor.vmnet.shared.plist'"))
+        XCTAssertTrue(script.contains("'/Users/luna/Library/Application Support/Moonvisor/Engine/1/libexec/socket_vmnet'"))
+        config.networkMode = .shared
+        XCTAssertNil(VMNet.service(for: config))
+    }
+
+    func testSnapshotRestoresHardwareButKeepsName() {
+        var snapshot = VMConfig(name: "Alt", guestOS: .windows11, cpuCount: 4, memoryMB: 8192, diskSizeGB: 64)
+        snapshot.graphics = .virtio
+        snapshot.soundEnabled = false
+        var current = snapshot
+        current.name = "Neu"
+        current.cpuCount = 2
+        current.memoryMB = 4096
+        current.soundEnabled = true
+        current.networkMode = .vmnet
+        Snapshots.applyHardware(from: snapshot, to: &current)
+        XCTAssertEqual(current.name, "Neu")
+        XCTAssertEqual(current.cpuCount, 4)
+        XCTAssertEqual(current.memoryMB, 8192)
+        XCTAssertFalse(current.soundEnabled)
+        XCTAssertEqual(current.networkMode, .vmnet)
+    }
+
+    func testTransferPathsStayInsideTarget() {
+        XCTAssertEqual(FileTransfer.safeComponents("../../etc/passwd"), ["etc", "passwd"])
+        XCTAssertEqual(FileTransfer.safeComponents("/Ordner\\Unter/./a:b.txt"), ["Ordner", "Unter", "a_b.txt"])
+    }
+
+    func testFileTransferListsFolderContents() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("transfer-\(UUID())/Projekt")
+        try fm.createDirectory(at: root.appendingPathComponent("leer"), withIntermediateDirectories: true)
+        try Data("hallo".utf8).write(to: root.appendingPathComponent("a.txt"))
+        defer { try? fm.removeItem(at: root.deletingLastPathComponent()) }
+        let items = FileTransfer.items(below: root)
+        XCTAssertEqual(Set(items.map(\.relativePath)), ["Projekt", "Projekt/leer", "Projekt/a.txt"])
+        XCTAssertEqual(FileTransfer.totalSize([root]), 5)
+    }
+
+    func testEngineManifestDecodes() throws {
+        let json = #"{"version":"1","archive":"moonvisor-engine-1-arm64.tar.xz","folder":"moonvisor-engine-1-arm64","sha256":"ab","size":10,"unpackedSize":20,"directX":true}"#
+        let manifest = try JSONDecoder().decode(EngineStore.Manifest.self, from: Data(json.utf8))
+        XCTAssertEqual(manifest.folder, "moonvisor-engine-1-arm64")
+        XCTAssertTrue(manifest.directX)
+    }
 }

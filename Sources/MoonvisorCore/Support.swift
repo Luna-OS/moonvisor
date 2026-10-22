@@ -7,6 +7,8 @@ public enum MoonError: LocalizedError {
     case invalidBundle(String)
     case qmp(String)
     case timeout(String)
+    case vmnetMissing(String)
+    case directXUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -18,6 +20,10 @@ public enum MoonError: LocalizedError {
         case .invalidBundle(let path): return "Keine gültige Moonvisor-VM: \(path)"
         case .qmp(let message): return "VM-Steuerung: \(message)"
         case .timeout(let what): return "Zeitüberschreitung: \(what)"
+        case .vmnetMissing(let mode):
+            return "Der Netzwerkdienst für „\(mode)“ ist nicht eingerichtet. Richte ihn in der Konfiguration unter „Netzwerk“ ein oder wähle „Gemeinsames Netzwerk (NAT)“."
+        case .directXUnavailable:
+            return "DirectX braucht die Moonvisor-Engine mit 3D-Bausteinen. Lade sie in den Einstellungen herunter oder wähle einen anderen Grafikmodus."
         }
     }
 }

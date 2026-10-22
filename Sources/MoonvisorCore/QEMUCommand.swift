@@ -8,6 +8,8 @@ public struct RuntimeSockets: Codable, Hashable, Sendable {
     public var vnc: String { directory + "/vnc" }
     public var tpm: String { directory + "/tpm" }
     public var agent: String { directory + "/agent" }
+    /// SPICE mit GL-Ausgabe (IOSurface) für den DirectX-Modus.
+    public var spice: String { directory + "/spice" }
 
     public init(directory: String) {
         self.directory = directory
@@ -27,6 +29,8 @@ public enum DisplayDevice: String, Sendable {
     case ramfb
     /// virtio-gpu, für Linux-Gäste mit dynamischer Auflösung.
     case virtioGPU
+    /// virtio-gpu mit virglrenderer und Neptune (DirectX 11 über DXMT/Metal).
+    case virtioGPUGL
 }
 
 /// Baut die QEMU-Argumente für eine VM. Reine Funktion, damit sie testbar ist.
@@ -52,6 +56,7 @@ public struct QEMUCommand: Sendable {
         switch config.graphics {
         case .basic: return .ramfb
         case .virtio: return .virtioGPU
+        case .directX: return toolchain.supportsDirectX ? .virtioGPUGL : .virtioGPU
         case .automatic: return config.guestOS == .windows11 ? .ramfb : .virtioGPU
         }
     }
@@ -67,6 +72,9 @@ public struct QEMUCommand: Sendable {
 
         a += ["-name", e(config.name)]
         a += ["-nodefaults", "-no-user-config"]
+        if let data = toolchain.dataDirectory {
+            a += ["-L", data.path]
+        }
         a += ["-machine", "virt,highmem=on"]
         a += ["-accel", "hvf", "-cpu", "host"]
         a += ["-smp", "\(max(1, config.cpuCount))"]
@@ -87,6 +95,9 @@ public struct QEMUCommand: Sendable {
         switch display {
         case .ramfb: a += ["-device", "ramfb"]
         case .virtioGPU: a += ["-device", "virtio-gpu-pci"]
+        case .virtioGPUGL:
+            // Neptune transportiert Direct3D-Aufrufe des Triton-Treibers zum Mac; blob/hostmem für geteilte Texturen.
+            a += ["-device", "virtio-gpu-gl-pci,hostmem=\(Self.gpuHostMemoryMB)M,blob=true,neptune=true"]
         }
 
         a += ["-device", "qemu-xhci,id=xhci"]
@@ -118,6 +129,11 @@ public struct QEMUCommand: Sendable {
             }
             a += ["-netdev", netdev]
             a += ["-device", "virtio-net-pci,netdev=net0,mac=\(config.macAddress)"]
+        case .vmnet, .bridged:
+            // Eigene IP über den vmnet-Dienst (socket_vmnet); Portweiterleitungen sind dann unnötig.
+            let socket = VMNet.service(for: config)?.socketPath ?? ""
+            a += ["-netdev", "stream,id=net0,server=off,addr.type=unix,addr.path=\(e(socket))"]
+            a += ["-device", "virtio-net-pci,netdev=net0,mac=\(config.macAddress)"]
         case .disconnected:
             break
         }
@@ -141,11 +157,34 @@ public struct QEMUCommand: Sendable {
 
         a += ["-display", "none"]
         a += ["-vnc", "unix:\(e(sockets.vnc))"]
+        if display == .virtioGPUGL {
+            // 3D-Bilder liefert QEMU nur über SPICE (IOSurface), nicht über VNC.
+            a += ["-spice", "unix=on,addr=\(e(sockets.spice)),disable-ticketing=on,gl=on,image-compression=off"]
+        }
         a += ["-qmp", "unix:\(e(sockets.qmp)),server=on,wait=off"]
         if let loadSnapshot {
             a += ["-loadvm", loadSnapshot]
         }
         return a
+    }
+
+    /// Gemeinsamer Grafikspeicher für Neptune (Texturen zwischen Gast und Metal).
+    static let gpuHostMemoryMB = 2048
+
+    /// Umgebung für den QEMU-Prozess. Mit DirectX braucht virglrenderer ANGLE (Metal), den Render-Server und DXMT.
+    public var environment: [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        guard display == .virtioGPUGL, let engine = toolchain.enginePrefix else { return env }
+        let frameworks = engine.appendingPathComponent("Frameworks")
+        let dxmt = frameworks.appendingPathComponent("dxmt-native.framework/Versions/A/dxmt-native").path
+        env["ANGLE_DEFAULT_PLATFORM"] = "metal"
+        env["RENDER_SERVER_EXEC_PATH"] = engine.appendingPathComponent("libexec/virgl_render_server").path
+        env["NPT_BACKEND"] = "dxmt"
+        env["NPT_D3D11_LIBRARY_PATH"] = dxmt
+        env["NPT_D3D12_LIBRARY_PATH"] = dxmt
+        env["NPT_DXGI_LIBRARY_PATH"] = dxmt
+        env["DYLD_FALLBACK_FRAMEWORK_PATH"] = frameworks.path
+        return env
     }
 
     public var swtpmArguments: [String] {

@@ -18,14 +18,23 @@ public enum GuestOS: String, Codable, CaseIterable, Sendable {
 public enum NetworkMode: String, Codable, CaseIterable, Sendable {
     /// NAT über QEMU-Usermode-Netz: Gast kommt ins Internet, Host erreicht den Gast über Portweiterleitungen.
     case shared
+    /// vmnet (gemeinsam): Gast bekommt eine eigene IP-Adresse, die der Mac direkt erreicht.
+    case vmnet
+    /// vmnet (Bridge): Gast hängt direkt im lokalen Netz, wie ein eigener Rechner.
+    case bridged
     case disconnected
 
     public var displayName: String {
         switch self {
         case .shared: return "Gemeinsames Netzwerk (NAT)"
+        case .vmnet: return "Eigene IP-Adresse (vom Mac erreichbar)"
+        case .bridged: return "Bridge (im lokalen Netz)"
         case .disconnected: return "Getrennt"
         }
     }
+
+    /// Braucht den vmnet-Dienst (läuft mit Administratorrechten).
+    public var usesVMNet: Bool { self == .vmnet || self == .bridged }
 }
 
 public struct PortForward: Codable, Hashable, Sendable, Identifiable {
@@ -48,14 +57,20 @@ public enum GraphicsMode: String, Codable, CaseIterable, Sendable {
     case basic
     /// virtio-gpu mit Treiber: Auflösung passt sich dem Fenster an.
     case virtio
+    /// virtio-gpu mit 3D (Neptune): DirectX 11 über DXMT/Metal, Triton-Treiber im Gast. Experimentell.
+    case directX
 
     public var displayName: String {
         switch self {
         case .automatic: return "Automatisch"
         case .basic: return "Basis (ohne Treiber)"
         case .virtio: return "virtio-GPU (dynamische Auflösung)"
+        case .directX: return "DirectX 11 (experimentell)"
         }
     }
+
+    /// Im Menü wählbar. DirectX kommt hinzu, sobald das VM-Fenster die 3D-Ausgabe (SPICE/IOSurface) anzeigt.
+    public static var selectable: [GraphicsMode] { [.automatic, .basic, .virtio] }
 }
 
 /// Ressourcenprofil wie im Installationsassistenten.
@@ -127,6 +142,8 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
 
     public var networkMode: NetworkMode = .shared
     public var portForwards: [PortForward] = []
+    /// Netzwerkschnittstelle des Macs für den Bridge-Modus.
+    public var bridgeInterface: String = "en0"
     public var macAddress: String
     public var soundEnabled: Bool = true
     public var tpmEnabled: Bool = true
@@ -171,7 +188,7 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case version, id, name, guestOS, notes, createdAt, cpuCount, memoryMB, diskSizeGB, profile
-        case networkMode, portForwards, macAddress, soundEnabled, tpmEnabled
+        case networkMode, portForwards, bridgeInterface, macAddress, soundEnabled, tpmEnabled
         case installMediaPath, installMediaAttached, autoConfirmCDBoot, installMode, attachDriversDisc
         case startOnOpen, commandAsControl, graphics, sharedClipboard, resumeSnapshot
     }
@@ -192,6 +209,7 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
         profile = try c.decodeIfPresent(ResourceProfile.self, forKey: .profile) ?? .custom
         networkMode = try c.decodeIfPresent(NetworkMode.self, forKey: .networkMode) ?? .shared
         portForwards = try c.decodeIfPresent([PortForward].self, forKey: .portForwards) ?? []
+        bridgeInterface = try c.decodeIfPresent(String.self, forKey: .bridgeInterface) ?? "en0"
         soundEnabled = try c.decodeIfPresent(Bool.self, forKey: .soundEnabled) ?? true
         tpmEnabled = try c.decodeIfPresent(Bool.self, forKey: .tpmEnabled) ?? (guestOS == .windows11)
         installMediaPath = try c.decodeIfPresent(String.self, forKey: .installMediaPath)
@@ -235,6 +253,8 @@ public struct VMBundle: Hashable, Sendable, Identifiable {
     public var toolsDiscURL: URL { url.appendingPathComponent("moon-tools.iso") }
     public var runtimeURL: URL { url.appendingPathComponent("runtime.json") }
     public var thumbnailURL: URL { url.appendingPathComponent("thumbnail.png") }
+    /// Hardware-Konfiguration je Schnappschuss mit Arbeitsspeicher.
+    public var snapshotConfigsURL: URL { url.appendingPathComponent("snapshots", isDirectory: true) }
     public var logURL: URL { url.appendingPathComponent("qemu.log") }
 
     public func loadConfig() throws -> VMConfig {
@@ -256,7 +276,7 @@ extension VMConfig {
     /// Ob die VM mit virtio-GPU startet (dann ist die Auflösung veränderbar).
     public var usesVirtioGPU: Bool {
         switch graphics {
-        case .virtio: return true
+        case .virtio, .directX: return true
         case .basic: return false
         case .automatic: return guestOS != .windows11
         }
