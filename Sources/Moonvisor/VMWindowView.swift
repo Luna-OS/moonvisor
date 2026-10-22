@@ -1,3 +1,4 @@
+import AppKit
 import MoonvisorCore
 import SwiftUI
 
@@ -69,6 +70,7 @@ struct VMWindowContent: View {
         .toolbar { toolbar }
         .toolbarBackground(Moon.panel, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
+        .modifier(FullScreenToolbar())
         .sheet(isPresented: $snapshotPrompt) { snapshotSheet }
         .onAppear {
             if entry.config.startOnOpen && entry.state == .stopped { model.start(entry) }
@@ -120,7 +122,20 @@ struct VMWindowContent: View {
                     Text(entry.config.autoConfirmCDBoot ? "Beim Start wird die Installation von der ISO begonnen." : "Installationsmedium ist eingelegt.")
                         .font(.system(size: 12)).foregroundStyle(Moon.textMuted)
                 }
-                if let error = entry.display.lastError, entry.thumbnail == nil {
+                if let failure = entry.lastFailure {
+                    VStack(spacing: 8) {
+                        Label("Letzter Start fehlgeschlagen", systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 13, weight: .semibold)).foregroundStyle(Moon.gold)
+                        Text(failure)
+                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(Moon.textSecondary)
+                            .multilineTextAlignment(.leading)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: 560, alignment: .leading)
+                        Button("Protokoll öffnen") { model.openLog(entry) }.buttonStyle(.link)
+                    }
+                    .padding(14)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Moon.deep.opacity(0.85)))
+                } else if let error = entry.display.lastError, entry.thumbnail == nil {
                     Text(error).font(.system(size: 11)).foregroundStyle(Moon.textMuted)
                 }
             }
@@ -194,5 +209,45 @@ struct VMWindowContent: View {
         .padding(20)
         .frame(width: 380)
         .background(Moon.card)
+    }
+}
+
+/// Im Vollbild gehört der Bildschirm der VM: die Werkzeugleiste erscheint nur, wenn die Maus an den oberen Rand fährt.
+private struct FullScreenToolbar: ViewModifier {
+    @State private var window: NSWindow?
+    @State private var fullScreen = false
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.windowToolbarFullScreenVisibility(.onHover)
+        } else {
+            // macOS 14: Leiste im Vollbild ausblenden; die Befehle bleiben über die Menüleiste erreichbar.
+            content
+                .toolbar(fullScreen ? .hidden : .visible, for: .windowToolbar)
+                .background(WindowReader(window: $window))
+                .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { note in
+                    if note.object as? NSWindow === window { fullScreen = true }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { note in
+                    if note.object as? NSWindow === window { fullScreen = false }
+                }
+        }
+    }
+}
+
+/// Liefert das NSWindow, in dem eine SwiftUI-Ansicht liegt.
+private struct WindowReader: NSViewRepresentable {
+    @Binding var window: NSWindow?
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { window = view.window }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        if window !== view.window {
+            DispatchQueue.main.async { window = view.window }
+        }
     }
 }

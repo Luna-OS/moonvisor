@@ -109,8 +109,18 @@ public struct Toolchain: Sendable {
         // Die ARM-Variablenvorlage hat dasselbe Layout wie die aarch64-Firmware.
         let data = fw.deletingLastPathComponent()
         let vars = data.appendingPathComponent("edk2-arm-vars.fd")
-        return Toolchain(qemuSystem: qemu, qemuImg: img, swtpm: s.swtpm, firmwareCode: fw, firmwareVarsTemplate: vars,
-                         dataDirectory: data, enginePrefix: s.isMoonvisorEngine ? s.prefix : nil)
+        return Toolchain(qemuSystem: qemu, qemuImg: img, swtpm: newestSwtpm(default: s.swtpm), firmwareCode: fw,
+                         firmwareVarsTemplate: vars, dataDirectory: data, enginePrefix: s.isMoonvisorEngine ? s.prefix : nil)
+    }
+
+    /// TPM-Zustand, den ein neueres swtpm/libtpms (0.10, z. B. aus Homebrew bei Moonvisor 0.1) angelegt hat,
+    /// kann das ältere libtpms der Engine nicht lesen. Ist ein Homebrew-swtpm vorhanden, nimmt Moonvisor deshalb
+    /// das: es liest alte wie neue Zustände. swtpm ist ein eigener Prozess, QEMU spricht nur über den Socket mit ihm.
+    static func newestSwtpm(default engineSwtpm: URL?) -> URL? {
+        let homebrew = ["/opt/homebrew/bin/swtpm", "/usr/local/bin/swtpm"]
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+            .map { URL(fileURLWithPath: $0) }
+        return homebrew ?? engineSwtpm
     }
 
     /// Legt die UEFI-Variablen einer VM aus der Vorlage an bzw. wandelt rohe Variablen in qcow2 um.
