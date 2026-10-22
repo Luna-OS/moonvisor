@@ -94,7 +94,7 @@ jobs:
           E="dist/moonvisor-engine-${{ steps.version.outputs.version }}-arm64"
           "$E/bin/qemu-system-aarch64" --version
           "$E/bin/qemu-img" --version
-          "$E/bin/swtpm" socket --version
+          "$E/bin/swtpm" socket --print-capabilities | tee /dev/stderr | grep -q '"type"'
           "$E/bin/qemu-system-aarch64" -machine help | grep -q '^virt '
           "$E/bin/qemu-system-aarch64" -accel help | tee /dev/stderr | grep -q hvf
           "$E/bin/qemu-system-aarch64" -device help > devices.txt
