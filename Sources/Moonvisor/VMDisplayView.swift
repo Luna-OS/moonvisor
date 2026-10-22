@@ -13,6 +13,8 @@ final class VMDisplayNSView: NSView {
     var autoResize = false
     /// Wird mit der gewünschten Gastauflösung aufgerufen (Moonvisor Tools im Gast).
     var onResizeRequest: ((Int, Int) -> Void)?
+    /// Dateien, die auf den Bildschirm gezogen wurden (gehen über die Moonvisor Tools in den Gast).
+    var onDropFiles: (([URL]) -> Void)?
     private var resizeWork: DispatchWorkItem?
     private var pressed: Set<UInt32> = []
     private var buttons: UInt8 = 0
@@ -30,6 +32,7 @@ final class VMDisplayNSView: NSView {
         layer?.contentsGravity = .resizeAspect
         layer?.magnificationFilter = .linear
         layer?.minificationFilter = .trilinear
+        registerForDraggedTypes([.fileURL])
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -167,6 +170,23 @@ final class VMDisplayNSView: NSView {
         if event.phase == .ended || event.momentumPhase == .ended { scrollAccumulator = .zero }
     }
 
+    // MARK: Drag & Drop
+
+    private func droppedFiles(_ sender: NSDraggingInfo) -> [URL] {
+        (sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        onDropFiles != nil && !droppedFiles(sender).isEmpty ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = droppedFiles(sender)
+        guard let onDropFiles, !urls.isEmpty else { return false }
+        onDropFiles(urls)
+        return true
+    }
+
     // MARK: Tastatur
 
     private func key(_ code: UInt32, down: Bool) {
@@ -225,6 +245,8 @@ struct VMDisplayView: NSViewRepresentable {
     let session: DisplaySession
     var commandAsControl: Bool
     var autoResize: Bool
+    /// Nil, solange die Moonvisor Tools nicht verbunden sind.
+    var onDropFiles: (([URL]) -> Void)?
 
     func makeNSView(context: Context) -> VMDisplayNSView {
         let view = VMDisplayNSView()
@@ -236,6 +258,7 @@ struct VMDisplayView: NSViewRepresentable {
 
     func updateNSView(_ view: VMDisplayNSView, context: Context) {
         view.commandAsControl = commandAsControl
+        view.onDropFiles = onDropFiles
         if view.autoResize != autoResize {
             view.autoResize = autoResize
             view.scheduleGuestResize()

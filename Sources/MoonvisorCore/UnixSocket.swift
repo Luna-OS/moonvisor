@@ -96,15 +96,20 @@ public final class UnixSocket: @unchecked Sendable {
 
     private var lineBuffer: [UInt8] = []
 
+    /// Bereits durchsuchter Anfang des Puffers (lange Zeilen, z. B. Dateiübertragungen, nicht immer neu durchsuchen).
+    private var scanned = 0
+
     public func readLine() throws -> String {
         while true {
-            if let nl = lineBuffer.firstIndex(of: 0x0A) {
+            if let nl = lineBuffer[scanned...].firstIndex(of: 0x0A) {
                 let line = Array(lineBuffer[..<nl])
                 lineBuffer.removeSubrange(...nl)
+                scanned = 0
                 return String(decoding: line, as: UTF8.self)
             }
-            var chunk = [UInt8](repeating: 0, count: 4096)
-            let n = chunk.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress!, 4096) }
+            scanned = lineBuffer.count
+            var chunk = [UInt8](repeating: 0, count: 65536)
+            let n = chunk.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress!, 65536) }
             if n == 0 { throw MoonError.qmp("Verbindung geschlossen") }
             if n < 0 {
                 if errno == EINTR { continue }

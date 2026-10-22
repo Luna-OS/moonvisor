@@ -7,6 +7,8 @@ public struct RuntimeInfo: Codable, Sendable {
     public var swtpmPID: Int32?
     public var sockets: RuntimeSockets
     public var startedAt: Date
+    /// Konfiguration, mit der die VM gestartet wurde (Änderungen gelten erst beim nächsten Start).
+    public var config: VMConfig?
 }
 
 public enum VMRunState: String, Sendable {
@@ -88,6 +90,13 @@ public enum VMRunner {
         var config = try bundle.loadConfig()
         let fm = FileManager.default
 
+        if let service = VMNet.service(for: config), !service.isRunning {
+            throw MoonError.vmnetMissing(config.networkMode.displayName)
+        }
+        if config.graphics == .directX && !toolchain.supportsDirectX {
+            throw MoonError.directXUnavailable
+        }
+
         Installation.prepareForBoot(bundle: bundle, config: &config)
 
         let sockets = RuntimeSockets.make(for: config.id)
@@ -140,6 +149,7 @@ public enum VMRunner {
         let qemu = Process()
         qemu.executableURL = toolchain.qemuSystem
         qemu.arguments = command.arguments
+        qemu.environment = command.environment
         qemu.currentDirectoryURL = bundle.url
         qemu.standardOutput = log
         qemu.standardError = log
@@ -158,7 +168,8 @@ public enum VMRunner {
             throw MoonError.processFailed("QEMU", logTail(bundle.logURL))
         }
 
-        let info = RuntimeInfo(qemuPID: qemu.processIdentifier, swtpmPID: swtpm?.processIdentifier, sockets: sockets, startedAt: Date())
+        let info = RuntimeInfo(qemuPID: qemu.processIdentifier, swtpmPID: swtpm?.processIdentifier, sockets: sockets,
+                               startedAt: Date(), config: config)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(info).write(to: bundle.runtimeURL, options: .atomic)

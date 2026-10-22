@@ -11,6 +11,9 @@ final class VMEntry: Identifiable {
     var busyMessage: String?
     /// Moonvisor Tools im Gast melden sich über den Agent-Kanal.
     var toolsActive = false
+    var toolsVersion: Int?
+    /// Laufende Dateiübertragungen in die VM.
+    var transfers = 0
     let display = DisplaySession()
     @ObservationIgnored var agent: AgentChannel?
     @ObservationIgnored var displaySocket: String?
@@ -46,6 +49,9 @@ final class VMEntry: Identifiable {
 final class AppModel {
     var entries: [VMEntry] = []
     var toolchainStatus = Toolchain.status()
+    /// Fortschritt, solange die Engine heruntergeladen wird.
+    var engineProgress: EngineStore.Phase?
+    var engineError: String?
     var errorMessage: String?
     var selectedID: String?
 
@@ -54,9 +60,12 @@ final class AppModel {
     @ObservationIgnored private var tick = 0
     @ObservationIgnored private var pasteboardCount = NSPasteboard.general.changeCount
     @ObservationIgnored private var lastClipboardFromGuest: String?
+    @ObservationIgnored private var lastFilesFromGuest: [URL] = []
 
     init() {
         reload()
+        // Beim ersten Start ohne Engine lädt Moonvisor sie selbst herunter.
+        if !toolchainStatus.isComplete { installEngine() }
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refreshStates() }
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.syncPasteboardToGuests() }
     }
@@ -131,6 +140,11 @@ final class AppModel {
             switch command {
             case "hello":
                 entry.toolsActive = true
+                entry.toolsVersion = Int(argument)
+                // Ältere Agenten ab Version 4 aktualisieren sich selbst.
+                if let version = Int(argument), version >= 4, version < GuestTools.version {
+                    entry.agent?.sendAgentUpdate()
+                }
                 // Mit installierten Tools ist auch der virtio-GPU-Treiber da: ab dem nächsten Start dynamische Auflösung.
                 if entry.config.guestOS == .windows11 && entry.config.graphics == .automatic {
                     var config = entry.config
@@ -146,9 +160,22 @@ final class AppModel {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
                 self.pasteboardCount = NSPasteboard.general.changeCount
+            case "img":
+                guard entry.config.sharedClipboard, let png = Data(base64Encoded: argument) else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setData(png, forType: .png)
+                self.pasteboardCount = NSPasteboard.general.changeCount
             default:
                 break
             }
+        }
+        agent.onFilesReceived = { [weak self, weak entry] urls, mode in
+            guard let self, let entry, entry.config.sharedClipboard, mode == "clip", !urls.isEmpty else { return }
+            // Im Finder mit ⌘V einsetzen.
+            self.lastFilesFromGuest = urls
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.writeObjects(urls as [NSURL])
+            self.pasteboardCount = NSPasteboard.general.changeCount
         }
         agent.onClose = { [weak entry] in entry?.toolsActive = false }
         entry.agent = agent
@@ -156,14 +183,55 @@ final class AppModel {
         agent.start()
     }
 
-    /// Mac-Zwischenablage an alle VMs mit Moonvisor Tools weitergeben.
+    /// Mac-Zwischenablage an alle VMs mit Moonvisor Tools weitergeben: Dateien, Text oder Bild.
     private func syncPasteboardToGuests() {
         let pasteboard = NSPasteboard.general
         guard pasteboard.changeCount != pasteboardCount else { return }
         pasteboardCount = pasteboard.changeCount
-        guard let text = pasteboard.string(forType: .string), text != lastClipboardFromGuest, text.utf8.count < 4_000_000 else { return }
-        for entry in entries where entry.toolsActive && entry.config.sharedClipboard {
-            entry.agent?.sendClipboard(text)
+        let targets = entries.filter { $0.toolsActive && $0.config.sharedClipboard }
+        guard !targets.isEmpty else { return }
+
+        let files = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        if !files.isEmpty {
+            guard files != lastFilesFromGuest else { return }
+            let urls = files
+            worker.async {
+                guard FileTransfer.totalSize(urls) <= FileTransfer.clipboardLimit else { return }
+                DispatchQueue.main.async {
+                    for entry in targets where (entry.toolsVersion ?? 0) >= 4 {
+                        entry.agent?.sendFiles(urls, mode: "clip")
+                    }
+                }
+            }
+            return
+        }
+        if let text = pasteboard.string(forType: .string) {
+            guard text != lastClipboardFromGuest, text.utf8.count < 4_000_000 else { return }
+            for entry in targets { entry.agent?.sendClipboard(text) }
+            return
+        }
+        if let png = Self.pngData(from: pasteboard), png.count < 32_000_000 {
+            for entry in targets where (entry.toolsVersion ?? 0) >= 4 { entry.agent?.sendImage(png: png) }
+        }
+    }
+
+    static func pngData(from pasteboard: NSPasteboard) -> Data? {
+        if let png = pasteboard.data(forType: .png) { return png }
+        guard let tiff = pasteboard.data(forType: .tiff), let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    /// Dateien per Drag & Drop in die VM (landen auf dem Windows-Schreibtisch).
+    func dropFiles(_ urls: [URL], into entry: VMEntry) {
+        guard let agent = entry.agent, entry.toolsActive else { return }
+        guard (entry.toolsVersion ?? 0) >= 4 else {
+            errorMessage = "Für Drag & Drop braucht die VM die neuen Moonvisor Tools. In Windows die CD „MOONTOOLS“ öffnen und „Moonvisor Tools installieren“ erneut ausführen."
+            return
+        }
+        entry.transfers += 1
+        agent.sendFiles(urls, mode: "drop") { [weak self, weak entry] error in
+            entry?.transfers -= 1
+            if let error { self?.errorMessage = "Übertragung fehlgeschlagen: \(error.localizedDescription)" }
         }
     }
 
@@ -259,18 +327,51 @@ final class AppModel {
         save(entry, config: config)
     }
 
-    /// Öffnet Terminal mit dem Homebrew-Installationsbefehl für die Engine.
-    func installEngine() {
-        let command = toolchainStatus.homebrew != nil
-            ? Toolchain.brewInstallCommand
-            : #"/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" && \#(Toolchain.brewInstallCommand)"#
-        let script = "tell application \"Terminal\" to do script \"\(command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\"\nactivate application \"Terminal\""
+    /// Richtet den vmnet-Netzwerkdienst ein. macOS fragt dafür einmalig nach einem Administrator-Passwort.
+    @discardableResult
+    func installVMNet(_ service: VMNet.Service) -> Bool {
+        guard let engine = EngineStore.installedURL else {
+            errorMessage = "Für dieses Netzwerk wird die Moonvisor-Engine benötigt. Lade sie in den Einstellungen herunter."
+            return false
+        }
+        let script = VMNet.installScript(for: service, engine: engine)
+        let escaped = script.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         var error: NSDictionary?
-        NSAppleScript(source: script)?.executeAndReturnError(&error)
-        if error != nil {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(command, forType: .string)
-            errorMessage = "Terminal konnte nicht geöffnet werden. Der Befehl wurde in die Zwischenablage kopiert:\n\(command)"
+        NSAppleScript(source: "do shell script \"\(escaped)\" with administrator privileges")?.executeAndReturnError(&error)
+        if let error {
+            // -128: Abbrechen im Passwortdialog.
+            if (error[NSAppleScript.errorNumber] as? Int) != -128 {
+                errorMessage = "Der Netzwerkdienst konnte nicht eingerichtet werden: \(error[NSAppleScript.errorMessage] as? String ?? "unbekannter Fehler")"
+            }
+            return false
+        }
+        if !VMNet.waitUntilRunning(service) {
+            errorMessage = "Der Netzwerkdienst wurde eingerichtet, startet aber nicht. Details: /var/log/moonvisor-vmnet-\(service.name).log"
+            return false
+        }
+        return true
+    }
+
+    /// Lädt die Moonvisor-Engine herunter, prüft und entpackt sie.
+    func installEngine() {
+        guard engineProgress == nil || engineProgress == .done else { return }
+        engineError = nil
+        engineProgress = .checking
+        Task {
+            do {
+                try await EngineStore.install { phase in
+                    DispatchQueue.main.async { self.engineProgress = phase }
+                }
+                await MainActor.run {
+                    self.engineProgress = nil
+                    self.reload()
+                }
+            } catch {
+                await MainActor.run {
+                    self.engineProgress = nil
+                    self.engineError = EngineStore.describe(error)
+                }
+            }
         }
     }
 

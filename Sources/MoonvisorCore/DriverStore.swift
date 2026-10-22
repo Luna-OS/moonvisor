@@ -22,27 +22,30 @@ public enum DriverStore {
         return try await download(to: virtioISOURL, progress: progress)
     }
 
-    public static func download(to destination: URL, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+    public static func download(from source: URL = virtioURL, to destination: URL, label: String = "Treiber-Download",
+                                progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         // Klassischer Download-Task statt `session.download(from:)`: nur so ruft URLSession den
         // Fortschritts-Delegate auf.
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
-            let delegate = DownloadDelegate(destination: destination, progress: progress) { result in
+            let delegate = DownloadDelegate(destination: destination, label: label, progress: progress) { result in
                 continuation.resume(with: result)
             }
             let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-            session.downloadTask(with: virtioURL).resume()
+            session.downloadTask(with: source).resume()
             session.finishTasksAndInvalidate()
         }
     }
 
     final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
         let destination: URL
+        let label: String
         let progress: @Sendable (Double) -> Void
         private var completion: ((Result<URL, Error>) -> Void)?
         private var moveError: Error?
 
-        init(destination: URL, progress: @escaping @Sendable (Double) -> Void, completion: @escaping (Result<URL, Error>) -> Void) {
+        init(destination: URL, label: String, progress: @escaping @Sendable (Double) -> Void, completion: @escaping (Result<URL, Error>) -> Void) {
             self.destination = destination
+            self.label = label
             self.progress = progress
             self.completion = completion
         }
@@ -57,7 +60,7 @@ public enum DriverStore {
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
             let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
             guard status == 200 else {
-                moveError = MoonError.processFailed("Treiber-Download", "HTTP \(status)")
+                moveError = MoonError.processFailed(label, "HTTP \(status)")
                 return
             }
             do {

@@ -32,8 +32,6 @@
     </array>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>Moonvisor öffnet das Terminal, um die Virtualisierungs-Engine über Homebrew zu installieren.</string>
     <key>NSHumanReadableCopyright</key>
     <string>© 2026 Luna · MIT-Lizenz</string>
 </dict>

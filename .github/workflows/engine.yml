@@ -1,0 +1,129 @@
+name: Engine
+
+# Baut die Moonvisor-Engine (QEMU mit Hypervisor.framework, swtpm, UEFI-Firmware, virglrenderer mit
+# Neptune, ANGLE und DXMT für DirectX) aus den Quellen. Die App lädt das fertige Paket selbst herunter;
+# Homebrew und das Terminal werden nicht gebraucht.
+#
+# Grundlage ist die Build-Kette von UTM (Apache-2.0) in einer festen Version.
+
+on:
+  pull_request:
+    paths:
+      - 'engine/**'
+      - '.github/workflows/engine.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'engine/**'
+      - '.github/workflows/engine.yml'
+  workflow_dispatch:
+
+env:
+  UTM_REF: v5.0.8
+  SOCKET_VMNET_REF: v1.2.2
+
+permissions:
+  contents: write
+
+jobs:
+  engine:
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        run: echo "version=$(cat engine/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: UTM-Build-Kette holen
+        uses: actions/checkout@v4
+        with:
+          repository: utmapp/UTM
+          ref: ${{ env.UTM_REF }}
+          path: utm
+          submodules: false
+
+      - name: Sysroot aus dem Cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: utm/sysroot-macOS-arm64
+          key: engine-sysroot-${{ env.UTM_REF }}-ohne-vulkan-1
+
+      - name: Werkzeuge
+        run: |
+          echo "/opt/homebrew/opt/bison/bin" >> "$GITHUB_PATH"
+          brew install bison pkg-config gettext glib-utils libgpg-error nasm make meson cmake xz
+          brew install llvm spirv-llvm-translator libxcb libxrandr
+          pip3 install --break-system-packages --user six pyparsing pyyaml setuptools distlib mako
+          rm -f /usr/local/lib/pkgconfig/*.pc
+
+      - name: Sysroot bauen
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: utm
+        run: |
+          # Vulkan-Treiber (MoltenVK, KosmicKrisp) braucht Moonvisor nicht: DirectX läuft über DXMT direkt auf Metal.
+          sed -i '' 's/^build_vulkan_drivers$/: # build_vulkan_drivers (von Moonvisor übersprungen)/' scripts/build_dependencies.sh
+          grep -q 'von Moonvisor übersprungen' scripts/build_dependencies.sh
+          ./scripts/build_dependencies.sh -p macos -a arm64
+
+      - name: Sysroot cachen
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: utm/sysroot-macOS-arm64
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: socket_vmnet bauen
+        run: |
+          git clone --depth 1 --branch "$SOCKET_VMNET_REF" https://github.com/lima-vm/socket_vmnet.git vmnet
+          CFLAGS="-O2 -mmacosx-version-min=12.0" make -C vmnet socket_vmnet ARCH=arm64
+
+      - name: Engine packen
+        run: engine/package.sh utm/sysroot-macOS-arm64 vmnet dist "${{ steps.version.outputs.version }}"
+
+      - name: Engine prüfen
+        run: |
+          E="dist/moonvisor-engine-${{ steps.version.outputs.version }}-arm64"
+          "$E/bin/qemu-system-aarch64" --version
+          "$E/bin/qemu-img" --version
+          "$E/bin/swtpm" socket --version
+          "$E/bin/qemu-system-aarch64" -machine help | grep -q '^virt '
+          "$E/bin/qemu-system-aarch64" -accel help | tee /dev/stderr | grep -q hvf
+          "$E/bin/qemu-system-aarch64" -device help > devices.txt
+          for device in nvme virtio-net-pci virtio-serial-pci ramfb virtio-gpu-pci virtio-gpu-gl-pci tpm-tis-device intel-hda hda-output usb-tablet; do
+            grep -q "\"$device\"" devices.txt || { echo "Gerät $device fehlt"; exit 1; }
+          done
+          "$E/bin/qemu-system-aarch64" -audiodev help | grep -q coreaudio
+          # Kurzer Start ohne Hardware-Beschleunigung: Firmware und Datenverzeichnis werden gefunden.
+          "$E/bin/qemu-img" create -f qcow2 vars.qcow2 64M
+          "$E/bin/qemu-system-aarch64" -L "$E/share/qemu" -machine virt -accel tcg -cpu max -m 512 \
+            -nodefaults -display none -vnc unix:$PWD/vnc.sock \
+            -drive if=pflash,format=raw,readonly=on,file="$E/share/qemu/edk2-aarch64-code.fd" \
+            -drive if=pflash,format=qcow2,file=vars.qcow2 \
+            -device virtio-net-pci,netdev=n0 -netdev user,id=n0 \
+            -qmp unix:$PWD/qmp.sock,server=on,wait=off &
+          QEMU=$!
+          sleep 10
+          test -S vnc.sock && test -S qmp.sock
+          kill "$QEMU"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moonvisor-engine
+          path: |
+            dist/*.tar.xz
+            dist/engine-manifest.json
+
+      - name: Veröffentlichen
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="engine-${{ steps.version.outputs.version }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --prerelease --title "Moonvisor Engine ${{ steps.version.outputs.version }}" \
+              --notes "Virtualisierungs-Engine für Moonvisor (QEMU, swtpm, UEFI-Firmware, virglrenderer/Neptune, ANGLE, DXMT, socket_vmnet). Gebaut aus den Quellen mit der UTM-Build-Kette $UTM_REF. Die App lädt dieses Paket selbst herunter. Quellen und Lizenzen: https://github.com/utmapp/UTM/tree/$UTM_REF/patches"
+          fi
+          gh release upload "$TAG" dist/*.tar.xz dist/engine-manifest.json --clobber

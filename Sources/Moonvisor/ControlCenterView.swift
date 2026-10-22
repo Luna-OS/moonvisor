@@ -175,27 +175,57 @@ struct EngineBanner: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "shippingbox")
+            Image(systemName: model.engineError == nil ? "shippingbox" : "exclamationmark.triangle")
                 .font(.system(size: 20))
                 .foregroundStyle(Moon.gold)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Virtualisierungs-Engine fehlt")
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Moon.text)
-                Text("Benötigt: \(model.toolchainStatus.missing.joined(separator: ", ")). Wird über Homebrew installiert.")
+                if let fraction {
+                    ProgressView(value: fraction).tint(Moon.accent)
+                }
+                Text(detail)
                     .font(.system(size: 11))
                     .foregroundStyle(Moon.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Button("Installieren") { model.installEngine() }
-                .buttonStyle(MoonPrimaryButtonStyle())
-            Button { model.reload() } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.plain)
-                .foregroundStyle(Moon.textSecondary)
-                .help("Erneut prüfen")
+            if model.engineProgress == nil {
+                Button(model.engineError == nil ? "Herunterladen" : "Erneut versuchen") { model.installEngine() }
+                    .buttonStyle(MoonPrimaryButtonStyle())
+            }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 12).fill(Moon.card))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Moon.gold.opacity(0.4)))
+    }
+
+    private var title: String {
+        switch model.engineProgress {
+        case .checking: return "Virtualisierungs-Engine wird vorbereitet …"
+        case .downloading: return "Virtualisierungs-Engine wird geladen …"
+        case .verifying: return "Engine wird geprüft …"
+        case .unpacking: return "Engine wird eingerichtet …"
+        case .done: return "Engine ist bereit"
+        case nil: return model.engineError == nil ? "Virtualisierungs-Engine fehlt" : "Engine konnte nicht geladen werden"
+        }
+    }
+
+    private var fraction: Double? {
+        switch model.engineProgress {
+        case .downloading(let value): return value
+        case .checking: return 0
+        case .verifying, .unpacking, .done: return 1
+        case nil: return nil
+        }
+    }
+
+    private var detail: String {
+        if let error = model.engineError { return error }
+        if model.engineProgress != nil {
+            return "Einmaliger Download von QEMU, TPM, UEFI-Firmware und den 3D-Bausteinen. Danach läuft alles ohne Internet."
+        }
+        return "Moonvisor lädt die Engine (QEMU, TPM, UEFI-Firmware, 3D-Bausteine) einmalig herunter."
     }
 }

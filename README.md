@@ -17,11 +17,11 @@ Moonvisor ist eine Virtualisierungs-App für macOS nach dem Vorbild von Parallel
 | **Windows 11 ARM** | Läuft nativ über Apple **Hypervisor.framework** (keine Emulation). UEFI-Firmware, **TPM 2.0**, NVMe-Festplatte. |
 | **Express-Installation** | ISO auswählen, Benutzername eingeben, fertig. Partitionierung, Edition, lokales Konto, Datenschutzseiten und Treiber erledigt Moonvisor – ohne einen Klick im Windows-Setup. |
 | **Automatische Treiber** | Lädt die virtio-Treiber (Netzwerk, Grafik, Speicher, Balloon …) und installiert die ARM64-Versionen beim ersten Login. |
-| **Moonvisor Tools** | Kleiner Agent im Gast (wie die Parallels Tools): **gemeinsame Zwischenablage** für Text in beide Richtungen und **Auflösung passend zum Fenster**. Wird bei der Express-Installation automatisch eingerichtet, sonst per Doppelklick von der CD „MOONTOOLS“. |
+| **Moonvisor Tools** | Kleiner Agent im Gast (wie die Parallels Tools): **gemeinsame Zwischenablage** für Text, Bilder und Dateien in beide Richtungen, **Dateien per Drag & Drop** in die VM und **Auflösung exakt passend zum Fenster**. Wird bei der Express-Installation automatisch eingerichtet, sonst per Doppelklick von der CD „MOONTOOLS“. |
 | **Kontrollcenter** | Alle VMs mit Live-Vorschau, Status und Schnellstart. |
 | **VM-Fenster** | Bildschirm direkt im Fenster, Tastatur positionsgenau (deutsches Layout, AltGr, Funktionstasten), Maus ohne „Einfangen“, Anhalten, Herunterfahren, Neustart, Strg+Alt+Entf. |
-| **Schnappschüsse** | Von laufenden VMs inklusive Arbeitsspeicher (dauert wenige Sekunden) oder von ausgeschalteten. Beim Wiederherstellen setzt Windows genau an der Stelle fort. |
-| **Konfiguration** | CPU, RAM, Festplatte vergrößern und bereinigen, CD/DVD, Netzwerk mit Portweiterleitung (z. B. Remotedesktop), Ton, TPM, Grafikmodus, ⌘ als Strg. |
+| **Schnappschüsse** | Von laufenden VMs inklusive Arbeitsspeicher (dauert wenige Sekunden) oder von ausgeschalteten. Beim Wiederherstellen setzt Windows genau an der Stelle fort, auch wenn die Hardware inzwischen geändert wurde: Moonvisor stellt die Hardware des Schnappschusses mit wieder her. |
+| **Konfiguration** | CPU, RAM, Festplatte vergrößern und bereinigen, CD/DVD, Ton, TPM, Grafikmodus, ⌘ als Strg. Netzwerk als NAT mit Portweiterleitung, mit **eigener IP-Adresse** (vom Mac direkt erreichbar) oder als **Bridge** ins lokale Netz. |
 | **Parallels-Import** | Übernimmt VMs aus `~/Parallels` (Name, CPU, RAM, Festplatte). Das Original bleibt unangetastet. |
 | **`moonctl`** | Alles auch im Terminal, ähnlich wie `prlctl`. |
 | **Hintergrund-VMs** | VMs laufen weiter, wenn die App geschlossen wird. Beim nächsten Öffnen verbindet sich Moonvisor wieder. |
@@ -29,11 +29,7 @@ Moonvisor ist eine Virtualisierungs-App für macOS nach dem Vorbild von Parallel
 ## Voraussetzungen
 
 - Mac mit **Apple-Chip** (M1 bis M4 und neuer), macOS 14 Sonoma oder neuer
-- [Homebrew](https://brew.sh) für die Virtualisierungs-Engine:
-  ```bash
-  brew install qemu swtpm
-  ```
-  Fehlt die Engine, zeigt Moonvisor einen Hinweis mit **Installieren**-Knopf, der genau diesen Befehl im Terminal ausführt.
+- Sonst nichts: Die Virtualisierungs-Engine (QEMU, TPM, UEFI-Firmware und die 3D-Bausteine) lädt Moonvisor beim ersten Start **selbst herunter**, mit Fortschrittsanzeige und Prüfsumme. Homebrew und das Terminal werden nicht gebraucht.
 - Eine **Windows 11 ARM64-ISO** – kostenlos bei Microsoft:
   [microsoft.com/software-download/windows11arm64](https://www.microsoft.com/de-de/software-download/windows11arm64)
   (Moonvisor findet ISOs in *Downloads* und im Parallels-Download-Ordner automatisch.)
@@ -90,9 +86,12 @@ Die wichtigste Erkenntnis: Parallels startet Windows-VMs in einem eigenen Prozes
   NVMe · virtio-net · ramfb/virtio-gpu · xHCI-Tastatur/Tablet · HDA-Ton
 ```
 
+- **Engine:** wird in CI aus den Quellen gebaut (`engine/`, Workflow `engine.yml`), mit der Build-Kette von [UTM](https://github.com/utmapp/UTM): QEMU mit Hypervisor.framework, swtpm, UEFI-Firmware, virglrenderer mit Neptune, ANGLE und DXMT, dazu `socket_vmnet` für das vmnet-Netzwerk. Das Paket liegt als Release `engine-<version>` bei; die App lädt es nach `~/Library/Application Support/Moonvisor/Engine`.
+
 - **Eine VM ist ein Ordner** `~/Moonvisor/Name.moonvm` mit `config.json`, `disk.qcow2` (dünn belegt, interne Schnappschüsse), `efi-vars.fd`, `tpm/` und der Setup-CD.
 - **Express-Installation:** Moonvisor erzeugt eine kleine CD `MOONSETUP` mit `autounattend.xml` (Partitionierung, Edition per generischem Microsoft-Installationsschlüssel ohne Aktivierung, lokales Konto, Überspringen der Hardware- und Online-Prüfungen) und einem Skript für den ersten Login, das die ARM64-virtio-Treiber per `pnputil` installiert.
-- **Moonvisor Tools:** ein virtio-serial-Port `io.moonvisor.agent` verbindet die App mit einem PowerShell/C#-Agenten im Gast, der per `ChangeDisplaySettingsEx` die Auflösung umstellt und die Zwischenablage abgleicht.
+- **Moonvisor Tools:** ein virtio-serial-Port `io.moonvisor.agent` verbindet die App mit einem PowerShell/C#-Agenten im Gast. Er trägt die Fenstergröße als eigene Auflösung im virtio-GPU-Treiber ein (`D3DKMTEscape`, wie das virtio-win-Hilfsprogramm), gleicht die Zwischenablage ab und überträgt Dateien. Neuere Versionen aktualisieren sich selbst.
+- **Netzwerk mit eigener IP:** Apple gibt vmnet nur mit Administratorrechten frei. Moonvisor richtet dafür einmalig einen kleinen Systemdienst ein (`socket_vmnet` aus der Engine, gestartet von launchd); macOS fragt dabei nach dem Administrator-Passwort.
 - **Bildschirm:** ein eigener RFB-Client mit QEMU-Scancode-Erweiterung, damit jede Mac-Taste positionsgenau ankommt.
 - **Steuerung:** QMP über einen Unix-Socket (Anhalten, Herunterfahren, Schnappschüsse, Bildschirmfotos).
 
@@ -100,12 +99,12 @@ Die wichtigste Erkenntnis: Parallels startet Windows-VMs in einem eigenen Prozes
 
 Moonvisor ist jung. Was Parallels kann und Moonvisor (noch) nicht:
 
-- **Keine 3D-Beschleunigung** (DirectX/Metal). Für Office, Browser und Entwicklung reicht es, für aktuelle Spiele nicht.
-- **Bildschirmauflösung:** Während des Setups 800×600. Danach schaltet Moonvisor automatisch auf virtio-GPU um; die Moonvisor Tools wählen dann die größte Windows-Auflösung, die ins Fenster passt (keine beliebigen Zwischengrößen).
-- **Kein Coherence-Modus** und kein Drag & Drop von Dateien. Die Zwischenablage teilt nur Text. Dateien lassen sich über Netzwerkfreigaben austauschen.
-- **Schnappschüsse mit Arbeitsspeicher** passen nur zur Hardware-Konfiguration, mit der sie erstellt wurden. Nach Änderungen an CPU, RAM, Grafik oder Ton startet die VM aus einem solchen Schnappschuss nicht; Schnappschüsse ausgeschalteter VMs sind davon nicht betroffen.
-- **Ton** nur als Ausgabe, kein Mikrofon.
-- **Netzwerk** als NAT. Der Mac erreicht die VM über Portweiterleitungen (z. B. Remotedesktop auf Port 3389).
+- **3D-Beschleunigung (DirectX) ist in Arbeit.** Die Engine enthält bereits die Bausteine für DirectX 11 über [Triton](https://blog.getutm.app/2026/introducing-triton-directx-11-driver-for-qemu/) (virglrenderer/Neptune und DXMT auf Metal). Es fehlt noch das VM-Fenster für die 3D-Ausgabe (SPICE/IOSurface statt VNC) und die Einrichtung des Triton-Treibers in Windows. Triton selbst ist noch experimentell. Bis dahin reicht es für Office, Browser und Entwicklung, für aktuelle Spiele nicht.
+- **Bildschirmauflösung:** Während des Setups 800×600, danach passt sie sich dem Fenster an. Windows erlaubt mindestens 1024×768; kleinere Fenster zeigen das Bild verkleinert.
+- **Kein Coherence-Modus.** Drag & Drop geht vom Mac in die VM (Dateien landen auf dem Windows-Schreibtisch). Von Windows zum Mac geht es über die Zwischenablage: in Windows kopieren, im Finder einsetzen. Über die Zwischenablage gehen bis zu 256 MB auf einmal.
+- **Ton nur als Ausgabe, kein Mikrofon.** Die CoreAudio-Anbindung von QEMU kann keine Aufnahme.
+- **Moonvisor Tools ab Version 4** sind für Dateien, Bilder und die freie Auflösung nötig. Bestehende VMs brauchen dafür einmal „Moonvisor Tools installieren“ von der CD „MOONTOOLS“; danach aktualisieren sich die Tools selbst.
+- **Schnappschüsse mit Arbeitsspeicher**, die vor dieser Version entstanden sind, kennen ihre Hardware noch nicht. Nach Änderungen an CPU, RAM, Grafik oder Ton startet die VM aus so einem Schnappschuss nicht.
 - Windows-Aktivierung erfordert eine eigene Lizenz.
 
 ## Selbst bauen
@@ -117,12 +116,12 @@ swift test                       # Unit-Tests
 scripts/build-app.sh 0.1.0       # baut dist/Moonvisor.app, ZIP und DMG
 ```
 
-Benötigt Xcode 16 oder neuer (Swift 5.10+).
+Benötigt Xcode 16 oder neuer (Swift 5.10+). Die Engine baut der Workflow `.github/workflows/engine.yml` (mehrere Stunden, das Ergebnis wird zwischengespeichert).
 
 ## Lizenz
 
 Moonvisor steht unter der [MIT-Lizenz](LICENSE).
 
-Moonvisor bündelt keine Fremdsoftware. Zur Laufzeit verwendet es separat installierte Komponenten unter deren eigenen Lizenzen: [QEMU](https://www.qemu.org) (GPL-2.0), [swtpm](https://github.com/stefanberger/swtpm) (BSD-3-Clause), [edk2](https://github.com/tianocore/edk2) (BSD-2-Clause-Patent) und die [virtio-win-Treiber](https://github.com/virtio-win/virtio-win-pkg-scripts) (BSD-3-Clause/GPL-2.0).
+Die App selbst bündelt keine Fremdsoftware. Die separat heruntergeladene Engine enthält Komponenten unter deren eigenen Lizenzen, unter anderem [QEMU](https://www.qemu.org) (GPL-2.0), [swtpm](https://github.com/stefanberger/swtpm) (BSD-3-Clause), [edk2](https://github.com/tianocore/edk2) (BSD-2-Clause-Patent), [virglrenderer](https://gitlab.freedesktop.org/virgl/virglrenderer) (MIT), [ANGLE](https://chromium.googlesource.com/angle/angle) (BSD-3-Clause), [DXMT](https://github.com/3Shain/dxmt) (LGPL-2.1) und [socket_vmnet](https://github.com/lima-vm/socket_vmnet) (Apache-2.0). Sie wird mit der Build-Kette von [UTM](https://github.com/utmapp/UTM) (Apache-2.0) gebaut; Quellen und Patches stehen dort und in `engine/`. Die [virtio-win-Treiber](https://github.com/virtio-win/virtio-win-pkg-scripts) (BSD-3-Clause/GPL-2.0) lädt Moonvisor bei Bedarf herunter.
 
 Moonvisor ist ein unabhängiges Projekt und steht in keiner Verbindung zu Parallels International GmbH oder Microsoft. „Parallels“ und „Windows“ sind Marken ihrer jeweiligen Inhaber.

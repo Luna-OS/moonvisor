@@ -9,7 +9,8 @@ moonctl – Moonvisor über die Kommandozeile steuern
 Verwendung:
   moonctl list                               Alle VMs mit Status
   moonctl info <vm>                          Konfiguration anzeigen
-  moonctl doctor                             Prüft QEMU, swtpm und Firmware
+  moonctl doctor                             Prüft Engine, TPM und Firmware
+  moonctl engine install                     Moonvisor-Engine herunterladen
   moonctl create-windows --iso <pfad> [--name N] [--user U] [--password P]
                          [--cpus 4] [--memory 4096] [--disk 64] [--edition pro|home] [--manual]
   moonctl import-parallels <pfad.pvm>        Parallels-VM übernehmen
@@ -89,12 +90,43 @@ func run() throws {
     case "doctor":
         let s = Toolchain.status()
         print("Apple Silicon: \(Toolchain.isAppleSilicon ? "ja" : "NEIN – Moonvisor benötigt einen Mac mit Apple-Chip")")
+        print("Engine:        \(s.isMoonvisorEngine ? "Moonvisor-Engine \(EngineStore.requiredVersion)" : (s.prefix?.path ?? "fehlt"))")
+        print("DirectX:       \(EngineStore.supportsDirectX ? "verfügbar (experimentell)" : "nicht verfügbar")")
         print("QEMU:          \(s.qemu?.path ?? "fehlt")")
         print("qemu-img:      \(s.qemuImg?.path ?? "fehlt")")
         print("swtpm:         \(s.swtpm?.path ?? "fehlt")")
         print("UEFI:          \(s.firmware?.path ?? "fehlt")")
         print("Treiber-CD:    \(DriverStore.cachedVirtioISO?.path ?? "noch nicht geladen")")
-        if !s.isComplete { print("\nInstallieren mit: \(Toolchain.brewInstallCommand)") }
+        if !s.isComplete { print("\nHerunterladen mit: moonctl engine install (oder in der Moonvisor-App)") }
+
+    case "engine":
+        let sub = try positional(1, "install")
+        guard sub == "install" else { throw CLIError(message: usage) }
+        let done = DispatchSemaphore(value: 0)
+        var failure: Error?
+        final class Steps: @unchecked Sendable { var last = -1 }
+        let steps = Steps()
+        Task {
+            do {
+                let url = try await EngineStore.install { phase in
+                    switch phase {
+                    case .checking: print("Suche Engine \(EngineStore.requiredVersion) …")
+                    case .downloading(let value):
+                        let step = Int(value * 10)
+                        if step != steps.last { steps.last = step; print("… \(step * 10) %") }
+                    case .verifying: print("Prüfe Prüfsumme …")
+                    case .unpacking: print("Entpacke …")
+                    case .done: break
+                    }
+                }
+                print("Engine bereit: \(url.path)")
+            } catch {
+                failure = error
+            }
+            done.signal()
+        }
+        done.wait()
+        if let failure { throw CLIError(message: EngineStore.describe(failure)) }
 
     case "create-windows":
         let iso = option("--iso")

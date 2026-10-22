@@ -164,12 +164,16 @@ struct SettingsView: View {
             }
             Section("Engine") {
                 let s = model.toolchainStatus
-                LabeledContent("QEMU (HVF)", value: s.qemu?.path ?? "fehlt")
-                LabeledContent("swtpm (TPM 2.0)", value: s.swtpm?.path ?? "fehlt")
-                LabeledContent("UEFI-Firmware", value: s.firmware?.path ?? "fehlt")
+                LabeledContent("Engine", value: engineDescription(s))
+                LabeledContent("DirectX (3D)", value: EngineStore.supportsDirectX ? "verfügbar (experimentell)" : "benötigt die Moonvisor-Engine")
                 LabeledContent("Treiber-CD", value: DriverStore.cachedVirtioISO == nil ? "wird bei der ersten Windows-VM geladen" : "vorhanden")
-                if !s.isComplete {
-                    Button("Engine über Homebrew installieren") { model.installEngine() }
+                if let error = model.engineError {
+                    Text(error).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                if model.engineProgress != nil {
+                    ProgressView().controlSize(.small)
+                } else if EngineStore.installedURL == nil {
+                    Button("Moonvisor-Engine herunterladen") { model.installEngine() }
                 }
                 Button("Erneut prüfen") { model.reload() }
             }
@@ -180,5 +184,11 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 560, height: 420)
+    }
+
+    private func engineDescription(_ s: Toolchain.Status) -> String {
+        guard s.isComplete, let prefix = s.prefix else { return "fehlt (\(s.missing.joined(separator: ", ")))" }
+        if s.isMoonvisorEngine { return "Moonvisor-Engine \(EngineStore.requiredVersion)" }
+        return prefix.path
     }
 }
