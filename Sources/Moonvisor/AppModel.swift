@@ -18,6 +18,8 @@ final class VMEntry: Identifiable {
     var gpuDriver: String?
     /// Moonvisor richtet gerade den DirectX-Treiber im Gast ein.
     var directXSetupRunning = false
+    /// Warum die VM zuletzt nicht starten konnte oder unerwartet beendet wurde.
+    var lastFailure: String?
     let display = DisplaySession()
     @ObservationIgnored var agent: AgentChannel?
     @ObservationIgnored var displaySocket: String?
@@ -293,15 +295,34 @@ final class AppModel {
             return
         }
         entry.state = .starting
+        entry.lastFailure = nil
         perform(entry, "Startet …") { bundle in
             if entry.config.graphics == .directX && entry.config.guestOS == .windows11 && DriverStore.cachedDirectXISO == nil {
                 try Self.loadDirectXDrivers(for: entry)
             }
             let toolchain = try Toolchain.locate(requireTPM: entry.config.tpmEnabled)
-            try VMRunner.start(bundle: bundle, toolchain: toolchain) { [weak self] _ in
-                DispatchQueue.main.async { self?.refreshStates() }
+            do {
+                try VMRunner.start(bundle: bundle, toolchain: toolchain) { [weak self] status in
+                    DispatchQueue.main.async { self?.vmExited(entry, status: status) }
+                }
+            } catch {
+                DispatchQueue.main.async { entry.lastFailure = error.localizedDescription }
+                throw error
             }
         }
+    }
+
+    /// QEMU ist beendet. Ein Fehlercode ohne vorheriges Herunterfahren heißt: die VM ist abgestürzt
+    /// oder gar nicht erst hochgekommen. Das soll nicht still als „ausgeschaltet“ enden.
+    private func vmExited(_ entry: VMEntry, status: Int32) {
+        let expected = entry.state == .stopping
+        refreshStates()
+        guard status != 0, !expected else { return }
+        let log = VMRunner.recentLog(of: entry.bundle)
+        let message = "\(entry.config.name) wurde unerwartet beendet (Code \(status))."
+            + (log.isEmpty ? "" : "\n\n" + log)
+        entry.lastFailure = message
+        errorMessage = message
     }
 
     /// Lädt die DirectX-Treiber-CD vor dem ersten Start im DirectX-Modus (läuft auf der Arbeits-Queue).
@@ -324,6 +345,11 @@ final class AppModel {
         if let error = outcome.error {
             throw MoonError.processFailed("DirectX-Treiber", DriverStore.describe(error))
         }
+    }
+
+    /// Öffnet `qemu.log` der VM (Konsole bzw. Texteditor).
+    func openLog(_ entry: VMEntry) {
+        NSWorkspace.shared.open(entry.bundle.logURL)
     }
 
     func shutdown(_ entry: VMEntry) {

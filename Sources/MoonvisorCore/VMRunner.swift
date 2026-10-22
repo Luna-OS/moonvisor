@@ -73,6 +73,11 @@ public enum VMRunner {
         return FileManager.default.fileExists(atPath: path)
     }
 
+    /// Letzte Zeilen aus `qemu.log` (für Fehlermeldungen in der App).
+    public static func recentLog(of bundle: VMBundle) -> String {
+        logTail(bundle.logURL)
+    }
+
     static func logTail(_ url: URL) -> String {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
         return text.split(separator: "\n").suffix(8).joined(separator: "\n")

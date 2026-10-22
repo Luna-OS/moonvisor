@@ -24,6 +24,7 @@ struct MoonvisorApp: App {
                 .errorAlert(model)
         }
         .defaultSize(width: 1100, height: 760)
+        .windowToolbarStyle(.unifiedCompact(showsTitle: true))
 
         WindowGroup("Konfiguration", id: "config", for: String.self) { $id in
             ConfigurationWindow(id: id ?? "")
