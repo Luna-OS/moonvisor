@@ -181,8 +181,17 @@ struct ConfigurationView: View {
                                 .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
                                 .fixedSize(horizontal: false, vertical: true)
                         } else if !EngineStore.supportsDirectX {
-                            Text("DirectX 11 wird verfügbar, sobald die Moonvisor-Engine geladen ist.")
-                                .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
+                            HStack(spacing: 8) {
+                                Text(model.engineProgress == nil
+                                     ? "DirectX 11 braucht die Moonvisor-Engine."
+                                     : "Moonvisor-Engine wird geladen … danach ist DirectX 11 hier wählbar.")
+                                    .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
+                                if model.engineProgress == nil {
+                                    Button("Jetzt laden") { model.installEngine() }.buttonStyle(.link)
+                                } else {
+                                    ProgressView().controlSize(.small)
+                                }
+                            }
                         }
                     }
                 }
