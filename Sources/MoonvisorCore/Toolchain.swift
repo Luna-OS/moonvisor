@@ -26,6 +26,8 @@ public struct Toolchain: Sendable {
     public var dataDirectory: URL?
     /// Engine-Ordner (bin/, Frameworks/, libexec/), nur bei der Moonvisor-Engine gesetzt.
     public var enginePrefix: URL?
+    /// Ob das TPM-Gerät dieser QEMU-Version die Option `ppi` kennt (QEMU 11 ja, QEMU 10 nein).
+    public var tpmHasPPI = true
 
     /// DirectX 11 über Neptune/DXMT ist nur mit der Moonvisor-Engine möglich.
     public var supportsDirectX: Bool {
@@ -110,7 +112,27 @@ public struct Toolchain: Sendable {
         let data = fw.deletingLastPathComponent()
         let vars = data.appendingPathComponent("edk2-arm-vars.fd")
         return Toolchain(qemuSystem: qemu, qemuImg: img, swtpm: newestSwtpm(default: s.swtpm), firmwareCode: fw,
-                         firmwareVarsTemplate: vars, dataDirectory: data, enginePrefix: s.isMoonvisorEngine ? s.prefix : nil)
+                         firmwareVarsTemplate: vars, dataDirectory: data, enginePrefix: s.isMoonvisorEngine ? s.prefix : nil,
+                         tpmHasPPI: deviceHasProperty(qemu, device: "tpm-tis-device", property: "ppi"))
+    }
+
+    private static let probeLock = NSLock()
+    nonisolated(unsafe) private static var probeCache: [String: Bool] = [:]
+
+    /// Fragt QEMU, ob ein Gerät eine Eigenschaft kennt (`-device <gerät>,help`). Das Ergebnis wird je QEMU zwischengespeichert.
+    static func deviceHasProperty(_ qemu: URL, device: String, property: String) -> Bool {
+        let key = "\(qemu.path)|\(device)|\(property)"
+        probeLock.lock()
+        if let cached = probeCache[key] { probeLock.unlock(); return cached }
+        probeLock.unlock()
+        guard let result = try? ProcessRunner.run(qemu, ["-device", "\(device),help"]), result.status == 0 else {
+            return true
+        }
+        let found = result.output.split(separator: "\n").contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix(property + "=") }
+        probeLock.lock()
+        probeCache[key] = found
+        probeLock.unlock()
+        return found
     }
 
     /// TPM-Zustand, den ein neueres swtpm/libtpms (0.10, z. B. aus Homebrew bei Moonvisor 0.1) angelegt hat,

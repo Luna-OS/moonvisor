@@ -89,7 +89,8 @@ public struct QEMUCommand: Sendable {
             a += ["-chardev", "socket,id=chrtpm,path=\(e(sockets.tpm))"]
             a += ["-tpmdev", "emulator,id=tpm0,chardev=chrtpm"]
             // PPI belegt eine Speicherregion, die Hypervisor.framework auf 16K-Seiten nicht abbilden kann.
-            a += ["-device", "tpm-tis-device,tpmdev=tpm0,ppi=off"]
+            // Ältere QEMU-Versionen (z. B. die der Engine) haben gar kein PPI und kennen die Option nicht.
+            a += ["-device", toolchain.tpmHasPPI ? "tpm-tis-device,tpmdev=tpm0,ppi=off" : "tpm-tis-device,tpmdev=tpm0"]
         }
 
         switch display {

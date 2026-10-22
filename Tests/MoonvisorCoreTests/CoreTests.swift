@@ -205,4 +205,14 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(GuestTools.agentScript.contains("'install-3d'"))
         XCTAssertTrue(GuestTools.agentScript.contains("$version = \(GuestTools.version)"))
     }
+
+    func testTPMWithoutPPIOptionForOlderQEMU() {
+        let config = VMConfig(name: "TPM", guestOS: .windows11, cpuCount: 2, memoryMB: 4096, diskSizeGB: 64)
+        var tools = toolchain()
+        tools.tpmHasPPI = false
+        let args = QEMUCommand(config: config, bundle: VMBundle(url: URL(fileURLWithPath: "/vms/TPM.moonvm")),
+                               toolchain: tools, sockets: RuntimeSockets(directory: "/t/mv")).arguments
+        XCTAssertTrue(args.contains("tpm-tis-device,tpmdev=tpm0"))
+        XCTAssertFalse(args.contains { $0.contains("ppi") })
+    }
 }
