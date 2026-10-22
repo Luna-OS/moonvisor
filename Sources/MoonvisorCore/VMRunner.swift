@@ -119,6 +119,10 @@ public enum VMRunner {
         if config.attachDriversDisc, let drivers = DriverStore.cachedVirtioISO {
             extraDiscs.append(drivers)
         }
+        // DirectX: Triton-Treiber als CD, die Moonvisor Tools richten ihn in Windows ein.
+        if config.graphics == .directX, config.guestOS == .windows11, let directX = DriverStore.cachedDirectXISO {
+            extraDiscs.append(directX)
+        }
         var command = QEMUCommand(config: config, bundle: bundle, toolchain: toolchain, sockets: sockets, extraDiscs: extraDiscs)
         // Ein Schnappschuss mit Arbeitsspeicher wird beim Start geladen. Das Laden in eine laufende VM
         // (loadvm) bringt QEMU 11 mit HVF zum Absturz, ein frischer Start mit -loadvm dagegen nicht.

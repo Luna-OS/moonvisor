@@ -4,13 +4,14 @@ import Foundation
 /// der über einen virtio-serial-Port mit dem Mac spricht (Auflösung, Zwischenablage, Dateien).
 ///
 /// Protokoll (zeilenweise, UTF-8, Binärdaten als Base64):
-///   Mac → Gast:  `hello-host`, `resize <breite> <höhe>`, `update <skript>`
-///   Gast → Mac:  `hello <version>`, `display <breite> <höhe>`
+///   Mac → Gast:  `hello-host`, `resize <breite> <höhe>`, `update <skript>`, `install-3d`
+///   Gast → Mac:  `hello <version>`, `display <breite> <höhe>`, `gpu viogpu3d|viogpudo|none`,
+///                `gpu-setup started|missing-tools|missing-drivers`
 ///   beide:       `clip <text>`, `img <png>`,
 ///                `xfer-begin <id> drop|clip`, `xfer-dir <id> <pfad>`, `xfer-file <id> <pfad> <größe>`,
 ///                `xfer-data <id> <daten>`, `xfer-end <id>`
 public enum GuestTools {
-    public static let version = 4
+    public static let version = 5
     public static let portName = "io.moonvisor.agent"
     public static let volumeName = "MOONTOOLS"
 
@@ -41,6 +42,7 @@ public enum GuestTools {
         defer { try? fm.removeItem(at: staging) }
 
         try windowsText(installScript).write(to: tools.appendingPathComponent("install.ps1"))
+        try windowsText(directXSetupScript).write(to: tools.appendingPathComponent("setup-directx.ps1"))
         try windowsText(agentScript).write(to: tools.appendingPathComponent("moon-agent.ps1"))
         try "\(version)".write(to: tools.appendingPathComponent("version.txt"), atomically: true, encoding: .utf8)
         try Data("@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0moon-tools\\install.ps1\"\r\n".utf8)
@@ -72,7 +74,9 @@ public enum GuestTools {
     foreach ($root in (Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root })) {
         if (Test-Path (Join-Path $root 'NetKVM')) {
             Write-Output "Treiber-CD: $root"
-            Get-ChildItem -Path $root -Directory | ForEach-Object {
+            # Mit eingerichtetem DirectX-Treiber (Triton) den einfachen Grafiktreiber nicht wieder installieren.
+            $skipGpu = Test-Path (Join-Path $env:ProgramData 'Moonvisor\DirectX\installed.txt')
+            Get-ChildItem -Path $root -Directory | Where-Object { -not ($skipGpu -and $_.Name -eq 'viogpudo') } | ForEach-Object {
                 $dir = Join-Path $_.FullName 'w11\ARM64'
                 if (Test-Path $dir) {
                     Get-ChildItem -Path $dir -Filter *.inf | ForEach-Object { pnputil.exe /add-driver $_.FullName /install }
@@ -100,6 +104,85 @@ public enum GuestTools {
     Start-Process conhost.exe -ArgumentList "--headless powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$agent`""
 
     Write-Output 'Moonvisor Tools installiert.'
+    Stop-Transcript | Out-Null
+    """#
+
+    /// Richtet den DirectX-Treiber Triton (viogpu3d) ein. Der einfache Treiber viogpudo lässt sich im laufenden
+    /// Betrieb nicht entladen: Phase 1 schaltet ihn ab und startet neu, Phase 2 (beim Start als SYSTEM) entfernt
+    /// ihn und installiert Triton. Danach startet Windows noch einmal neu.
+    static let directXSetupScript = #"""
+    # Moonvisor: DirectX-Treiber (Triton) einrichten
+    param([int]$Phase = 1)
+    $ErrorActionPreference = 'Continue'
+    $base = Join-Path $env:ProgramData 'Moonvisor\DirectX'
+    New-Item -ItemType Directory -Force -Path $base | Out-Null
+    Start-Transcript -Path (Join-Path $env:ProgramData 'Moonvisor\directx-setup.log') -Append | Out-Null
+    $taskName = 'Moonvisor DirectX'
+    $serviceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\VioGpuDod'
+
+    function Install-Triton {
+        pnputil.exe /add-driver (Join-Path $base 'viogpu3d.inf') /install
+        Write-Output "pnputil: $LASTEXITCODE"
+        Set-Content -Path (Join-Path $base 'installed.txt') -Value (Get-Date -Format o)
+    }
+
+    function Restart-Soon([string]$reason) {
+        shutdown.exe /r /t 15 /c $reason
+    }
+
+    if ($Phase -eq 1) {
+        Add-Type -AssemblyName System.ServiceProcess
+        $running = [System.ServiceProcess.ServiceController]::GetDevices() | Where-Object { $_.ServiceName -eq 'VioGpu3D' -and $_.Status -eq 'Running' }
+        if ($running) { Write-Output 'Triton läuft bereits.'; Stop-Transcript | Out-Null; exit 0 }
+        # Treiber und Skript nach ProgramData kopieren: Phase 2 läuft ohne Benutzer beim Start.
+        $source = $null
+        foreach ($root in (Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root })) {
+            $dir = Join-Path $root 'Drivers\viogpu3d\w11\ARM64'
+            if (Test-Path (Join-Path $dir 'viogpu3d.inf')) { $source = $dir }
+        }
+        if (-not $source) { Write-Output 'DirectX-Treiber-CD nicht gefunden.'; Stop-Transcript | Out-Null; exit 1 }
+        Copy-Item -Force -Path (Join-Path $source '*') -Destination $base
+        Copy-Item -Force -Path $PSCommandPath -Destination (Join-Path $base 'setup-directx.ps1')
+        if (Test-Path $serviceKey) {
+            Set-ItemProperty -Path $serviceKey -Name Start -Value 4 -Type DWord
+            $script = Join-Path $base 'setup-directx.ps1'
+            $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`" -Phase 2"
+            $trigger = New-ScheduledTaskTrigger -AtStartup
+            $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+            Restart-Soon 'Moonvisor richtet DirectX ein. Windows startet dafür neu.'
+        } else {
+            Install-Triton
+            Restart-Soon 'Moonvisor hat den DirectX-Treiber eingerichtet. Windows startet neu.'
+        }
+        Stop-Transcript | Out-Null
+        exit 0
+    }
+
+    # Phase 2: viogpudo ist nicht geladen und lässt sich jetzt entfernen.
+    $attempts = Join-Path $base 'attempts.txt'
+    $count = 0
+    if (Test-Path $attempts) { $count = [int](Get-Content $attempts) }
+    Set-Content -Path $attempts -Value ($count + 1)
+    Get-WindowsDriver -Online | Where-Object { (Split-Path $_.OriginalFileName -Leaf) -eq 'viogpudo.inf' } | ForEach-Object {
+        pnputil.exe /delete-driver $_.Driver /uninstall /force
+    }
+    sc.exe delete VioGpuDod | Out-Null
+    sc.exe query VioGpuDod | Out-Null
+    if ($LASTEXITCODE -eq 1060 -and (Test-Path $serviceKey)) {
+        # Der Dienstmanager kennt den Dienst nicht mehr, nur der Schlüssel ist übrig.
+        Remove-Item -Path $serviceKey -Recurse -Force
+    }
+    $gone = -not (Test-Path $serviceKey)
+    if (-not $gone -and $count -lt 3) {
+        # Der Dienstmanager gibt den alten Treiber erst nach einem weiteren Neustart frei.
+        Restart-Soon 'Moonvisor richtet DirectX ein (Schritt 2).'
+        Stop-Transcript | Out-Null
+        exit 0
+    }
+    Install-Triton
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+    Restart-Soon 'Moonvisor hat den DirectX-Treiber eingerichtet. Windows startet neu.'
     Stop-Transcript | Out-Null
     """#
 
@@ -497,13 +580,26 @@ public enum GuestTools {
     '@
 
     $name = 'io.moonvisor.agent'
-    $version = 4
+    $version = 5
     $clipLimit = 256MB
     function Connect-Host {
         while (-not [MoonAgent]::Open($name)) { Start-Sleep -Seconds 5 }
-        [MoonAgent]::Send("hello $version")
+        Send-Hello
     }
     function From-Base64([string]$text) { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($text)) }
+    Add-Type -AssemblyName System.ServiceProcess
+    # Welcher virtio-Grafiktreiber läuft: Triton (DirectX) oder der einfache?
+    function Get-GpuDriver {
+        $devices = [System.ServiceProcess.ServiceController]::GetDevices()
+        foreach ($service in 'VioGpu3D', 'VioGpuDod') {
+            if ($devices | Where-Object { $_.ServiceName -eq $service -and $_.Status -eq 'Running' }) { return $service.ToLower() }
+        }
+        return 'none'
+    }
+    function Send-Hello {
+        [MoonAgent]::Send("hello $version")
+        [MoonAgent]::Send('gpu ' + (Get-GpuDriver))
+    }
     Connect-Host
 
     $lastSeq = [MoonAgent]::ClipSeq()
@@ -513,7 +609,21 @@ public enum GuestTools {
             $parts = $msg.Split(' ', 2)
             try {
                 switch ($parts[0]) {
-                    'hello-host' { [MoonAgent]::Send("hello $version") }
+                    'hello-host' { Send-Hello }
+                    'install-3d' {
+                        # DirectX-Treiber einrichten: das Skript liegt auf der CD „MOONTOOLS“, die Treiber auf der DirectX-CD.
+                        $setup = $null
+                        foreach ($root in (Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root })) {
+                            $candidate = Join-Path $root 'moon-tools\setup-directx.ps1'
+                            if (Test-Path $candidate) { $setup = $candidate }
+                        }
+                        if ($setup) {
+                            Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$setup`" -Phase 1"
+                            [MoonAgent]::Send('gpu-setup started')
+                        } else {
+                            [MoonAgent]::Send('gpu-setup missing-tools')
+                        }
+                    }
                     'resize' {
                         $wh = $parts[1].Split(' ')
                         [MoonAgent]::Resize([int]$wh[0], [int]$wh[1]) | Out-Null

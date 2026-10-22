@@ -166,7 +166,7 @@ struct ConfigurationView: View {
                 row("Grafik") {
                     VStack(alignment: .leading, spacing: 4) {
                         Picker("", selection: $draft.graphics) {
-                            ForEach(GraphicsMode.selectable + (draft.graphics == .directX ? [.directX] : []), id: \.self) {
+                            ForEach(GraphicsMode.selectable(directX: EngineStore.supportsDirectX || draft.graphics == .directX), id: \.self) {
                                 Text($0.displayName).tag($0)
                             }
                         }
@@ -174,6 +174,14 @@ struct ConfigurationView: View {
                         .fixedSize()
                         if draft.guestOS == .windows11 && draft.graphics == .virtio {
                             Text("Benötigt den virtio-GPU-Treiber in Windows (wird bei der Express-Installation eingerichtet).")
+                                .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
+                        }
+                        if draft.graphics == .directX {
+                            Text(directXHint)
+                                .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if !EngineStore.supportsDirectX {
+                            Text("DirectX 11 wird verfügbar, sobald die Moonvisor-Engine geladen ist.")
                                 .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
                         }
                     }
@@ -327,6 +335,13 @@ struct ConfigurationView: View {
                 }
             }
         }
+    }
+
+    private var directXHint: String {
+        if entry.gpuDriver == "viogpu3d" {
+            return "DirectX-Treiber (Triton) ist aktiv. Experimentell: nicht jedes Spiel läuft, DirectX 12 nicht."
+        }
+        return "Experimentell (Triton, DirectX 11 über Metal). Beim nächsten Start lädt Moonvisor den Treiber (ca. 140 MB) und richtet ihn mit den Moonvisor Tools in Windows ein; Windows startet dafür zwei- bis dreimal neu. Speichere vorher deine Arbeit."
     }
 
     private var toolsOutdated: Bool { (entry.toolsVersion ?? 0) < GuestTools.version }

@@ -176,4 +176,33 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(manifest.folder, "moonvisor-engine-1-arm64")
         XCTAssertTrue(manifest.directX)
     }
+
+    func testDirectXUsesNeptuneAndSpiceWithEngine() throws {
+        let fm = FileManager.default
+        let engine = fm.temporaryDirectory.appendingPathComponent("engine-\(UUID())")
+        try fm.createDirectory(at: engine.appendingPathComponent("Frameworks/dxmt-native.framework"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: engine.appendingPathComponent("libexec"), withIntermediateDirectories: true)
+        let server = engine.appendingPathComponent("libexec/virgl_render_server")
+        fm.createFile(atPath: server.path, contents: Data(), attributes: [.posixPermissions: 0o755])
+        defer { try? fm.removeItem(at: engine) }
+
+        var config = VMConfig(name: "3D", guestOS: .windows11, cpuCount: 4, memoryMB: 8192, diskSizeGB: 64)
+        config.graphics = .directX
+        let bundle = VMBundle(url: URL(fileURLWithPath: "/vms/3D.moonvm"))
+        let command = QEMUCommand(config: config, bundle: bundle, toolchain: toolchain(engine: engine), sockets: RuntimeSockets(directory: "/t/mv"))
+        XCTAssertEqual(command.display, .virtioGPUGL)
+        let args = command.arguments
+        XCTAssertTrue(args.contains { $0.hasPrefix("virtio-gpu-gl-pci,") && $0.contains("neptune=true") && $0.contains("blob=true") })
+        XCTAssertEqual(args[args.firstIndex(of: "-spice")! + 1], "unix=on,addr=/t/mv/spice,disable-ticketing=on,gl=on,image-compression=off")
+        XCTAssertEqual(command.environment["NPT_BACKEND"], "dxmt")
+        XCTAssertEqual(command.environment["RENDER_SERVER_EXEC_PATH"], server.path)
+        XCTAssertEqual(GraphicsMode.selectable(directX: false).contains(.directX), false)
+        XCTAssertEqual(GraphicsMode.selectable(directX: true).last, .directX)
+    }
+
+    func testToolsDiscContainsDirectXSetup() {
+        XCTAssertTrue(GuestTools.directXSetupScript.contains("viogpu3d.inf"))
+        XCTAssertTrue(GuestTools.agentScript.contains("'install-3d'"))
+        XCTAssertTrue(GuestTools.agentScript.contains("$version = \(GuestTools.version)"))
+    }
 }

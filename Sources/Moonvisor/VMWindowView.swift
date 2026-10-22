@@ -78,6 +78,7 @@ struct VMWindowContent: View {
     private var subtitle: String {
         if let busy = entry.busyMessage { return busy }
         if entry.transfers > 0 { return "Dateien werden in die VM übertragen …" }
+        if entry.directXSetupRunning { return "DirectX-Treiber wird eingerichtet – Windows startet dafür neu …" }
         if entry.display.connected, entry.display.resolution.width > 0 {
             return "\(entry.state.displayName) · \(Int(entry.display.resolution.width))×\(Int(entry.display.resolution.height))"
         }

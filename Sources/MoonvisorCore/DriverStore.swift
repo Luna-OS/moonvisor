@@ -15,6 +15,26 @@ public enum DriverStore {
         FileManager.default.fileExists(atPath: virtioISOURL.path) ? virtioISOURL : nil
     }
 
+    /// Gasttools von UTM mit dem signierten DirectX-Treiber Triton (viogpu3d, ARM64) für den DirectX-Modus.
+    public static let directXDriversURL = URL(string: "https://getutm.app/downloads/utm-guest-tools-3d-latest.iso")!
+    public static var directXISOURL: URL { cacheFolder.appendingPathComponent("directx-drivers.iso") }
+
+    public static var cachedDirectXISO: URL? {
+        FileManager.default.fileExists(atPath: directXISOURL.path) ? directXISOURL : nil
+    }
+
+    /// Lädt die DirectX-Treiber-CD, falls sie noch nicht im Cache liegt. `progress` meldet 0…1.
+    public static func ensureDirectXISO(progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+        if let cached = cachedDirectXISO { return cached }
+        try FileManager.default.createDirectory(at: cacheFolder, withIntermediateDirectories: true)
+        // Erst vollständig laden, dann umbenennen: ein abgebrochener Download zählt nicht als vorhanden.
+        let partial = cacheFolder.appendingPathComponent("directx-drivers.iso.part")
+        _ = try await download(from: directXDriversURL, to: partial, label: "DirectX-Treiber", progress: progress)
+        try? FileManager.default.removeItem(at: directXISOURL)
+        try FileManager.default.moveItem(at: partial, to: directXISOURL)
+        return directXISOURL
+    }
+
     /// Lädt die Treiber-CD herunter, falls sie noch nicht im Cache liegt. `progress` meldet 0…1.
     public static func ensureVirtioISO(progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         if let cached = cachedVirtioISO { return cached }
