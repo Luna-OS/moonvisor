@@ -117,7 +117,9 @@ swift test                       # Unit-Tests
 scripts/build-app.sh 0.1.0       # baut dist/Moonvisor.app, ZIP und DMG
 ```
 
-Benötigt Xcode 16 oder neuer (Swift 5.10+). Die Engine baut der Workflow `.github/workflows/engine.yml` (mehrere Stunden, das Ergebnis wird zwischengespeichert).
+Benötigt Xcode 16 oder neuer (Swift 5.10+).
+
+**Neue Version veröffentlichen:** Versionshinweise als `docs/releases/<version>.md` auf `main` bringen. Der Workflow `release.yml` baut daraus das Release `v<version>` (DMG, ZIP, Prüfsummen). Er wartet dabei auf das passende Engine-Release. Die Engine baut der Workflow `.github/workflows/engine.yml` (mehrere Stunden, das Ergebnis wird zwischengespeichert).
 
 ## Lizenz
 
