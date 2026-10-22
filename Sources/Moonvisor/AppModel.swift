@@ -68,8 +68,9 @@ final class AppModel {
 
     init() {
         reload()
-        // Beim ersten Start ohne Engine lädt Moonvisor sie selbst herunter.
-        if !toolchainStatus.isComplete { installEngine() }
+        // Moonvisor lädt seine eigene Engine selbst herunter, auch wenn noch eine ältere Homebrew-Installation
+        // vorhanden ist: nur die Moonvisor-Engine kann DirectX.
+        if EngineStore.installedURL == nil { installEngine() }
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refreshStates() }
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.syncPasteboardToGuests() }
     }

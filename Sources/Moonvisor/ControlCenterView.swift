@@ -12,7 +12,7 @@ struct ControlCenterView: View {
             MoonBackground()
             VStack(spacing: 0) {
                 header
-                if !model.toolchainStatus.isComplete {
+                if !model.toolchainStatus.isComplete || model.engineProgress != nil || model.engineError != nil {
                     EngineBanner()
                         .padding(.horizontal, 16)
                         .padding(.bottom, 8)
