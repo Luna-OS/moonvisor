@@ -1,0 +1,71 @@
+name: Release
+
+# Veröffentlicht eine neue App-Version, sobald ihre Versionshinweise unter docs/releases/<version>.md
+# auf main liegen. Die App braucht die passende Engine (Release engine-<engine/VERSION>); fehlt sie noch,
+# wartet das Release und erscheint automatisch, wenn der Engine-Build auf main fertig ist.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/releases/**'
+  workflow_run:
+    workflows: [Engine]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Offene Version suchen
+        id: pending
+        run: |
+          VERSION="$(ls docs/releases/*.md | sed 's|.*/||; s|\.md$||' | sort -V | tail -1)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Moonvisor $VERSION ist schon veröffentlicht."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ENGINE="engine-$(cat engine/VERSION)"
+          if ! gh release view "$ENGINE" --json assets -q '.assets[].name' 2>/dev/null | grep -qx engine-manifest.json; then
+            echo "::notice::Moonvisor $VERSION wartet auf $ENGINE. Das Release erscheint, sobald der Engine-Build auf main fertig ist."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Tests
+        if: steps.pending.outputs.publish == 'true'
+        run: swift test
+
+      - name: App bauen
+        if: steps.pending.outputs.publish == 'true'
+        run: scripts/build-app.sh "${{ steps.pending.outputs.version }}"
+
+      - name: Veröffentlichen
+        if: steps.pending.outputs.publish == 'true'
+        run: |
+          VERSION="${{ steps.pending.outputs.version }}"
+          gh release create "v$VERSION" \
+            "dist/Moonvisor-$VERSION-arm64.dmg" "dist/Moonvisor-$VERSION-arm64.zip" dist/SHA256SUMS.txt \
+            --title "Moonvisor $VERSION" \
+            --notes-file "docs/releases/$VERSION.md" \
+            --target "$(git rev-parse HEAD)"
