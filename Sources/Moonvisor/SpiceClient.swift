@@ -30,6 +30,8 @@ final class SpiceClient: @unchecked Sendable, DisplayClient {
     /// Mauszeiger des Gasts; nil = unsichtbar (Main-Thread).
     var onCursor: ((NSCursor?) -> Void)?
     var onDisconnect: ((Error?) -> Void)?
+    /// Diagnosezeilen (beliebiger Thread), landen in `spice.log` im VM-Ordner.
+    var log: ((String) -> Void)?
 
     private(set) var width = 0
     private(set) var height = 0
@@ -75,6 +77,7 @@ final class SpiceClient: @unchecked Sendable, DisplayClient {
     }
 
     private func fail(_ error: Error?) {
+        if let error { log?("Fehler: \(error.localizedDescription)") }
         lock.lock()
         let wasStopped = stopped
         stopped = true
@@ -109,6 +112,7 @@ final class SpiceClient: @unchecked Sendable, DisplayClient {
                 case SpiceMsg.mainInit where data.count >= 16:
                     let session = le32(data, 0)
                     let mouseModes = le32(data, 8)
+                    log?("Hauptkanal verbunden, Sitzung \(session), Mausmodi \(mouseModes)")
                     main.send(SpiceMsg.mainAttachChannels)
                     if mouseModes & 2 != 0 { main.send(SpiceMsg.mainMouseModeRequest, le16(2)) }
                     openChannels(session: session)
@@ -131,6 +135,7 @@ final class SpiceClient: @unchecked Sendable, DisplayClient {
             // MONITORS_CONFIG (1), GL_SCANOUT (7)
             let channel = try SpiceChannel(path: self.path, type: .display, connectionID: session, channelCaps: [1 << 1 | 1 << 7])
             guard self.register(channel) else { return }
+            self.log?("Bildkanal verbunden")
             channel.send(SpiceMsg.displayInit, [0] + le64(0) + [0] + le32(0))
             try self.runDisplay(channel)
         }
@@ -172,14 +177,26 @@ final class SpiceClient: @unchecked Sendable, DisplayClient {
     }
 
     private func runDisplay(_ channel: SpiceChannel) throws {
+        var seen = 0
         while !isStopped {
             let (type, data) = try channel.readMessage()
+            if seen < 40 {
+                seen += 1
+                log?("Bildkanal: Nachricht \(type), \(data.count) Bytes")
+            }
             switch type {
             case SpiceMsg.displayGLScanoutUnix where data.count >= 20:
                 let w = Int(le32(data, 0)), h = Int(le32(data, 4))
-                guard let fd = channel.takeFD() else { continue }
+                guard let fd = channel.takeFD() else {
+                    log?("Scanout \(w)×\(h) ohne Dateideskriptor")
+                    continue
+                }
                 defer { Darwin.close(fd) }
-                guard w > 0, h > 0, let surface = Self.surface(from: fd) else { continue }
+                guard w > 0, h > 0, let surface = Self.surface(from: fd) else {
+                    log?("Scanout \(w)×\(h): IOSurface nicht lesbar")
+                    continue
+                }
+                log?("Scanout \(w)×\(h), IOSurface \(IOSurfaceGetID(surface))")
                 DispatchQueue.main.async {
                     self.width = w
                     self.height = h

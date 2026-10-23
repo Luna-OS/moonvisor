@@ -193,7 +193,7 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(command.display, .virtioGPUGL)
         let args = command.arguments
         XCTAssertTrue(args.contains { $0.hasPrefix("virtio-gpu-gl-pci,") && $0.contains("neptune=true") && $0.contains("blob=true") })
-        XCTAssertEqual(args[args.firstIndex(of: "-spice")! + 1], "unix=on,addr=/t/mv/spice,disable-ticketing=on,gl=on,image-compression=off")
+        XCTAssertEqual(args[args.firstIndex(of: "-spice")! + 1], "unix=on,addr=/t/mv/spice,disable-ticketing=on,gl=es,image-compression=off,playback-compression=off,streaming-video=off")
         XCTAssertFalse(args.contains("-vnc"))
         XCTAssertEqual(command.environment["NPT_BACKEND"], "dxmt")
         XCTAssertEqual(command.environment["RENDER_SERVER_EXEC_PATH"], server.path)
