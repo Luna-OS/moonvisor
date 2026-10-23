@@ -76,7 +76,9 @@ public struct QEMUCommand: Sendable {
             a += ["-L", data.path]
         }
         a += ["-machine", "virt,highmem=on"]
-        a += ["-accel", "hvf", "-cpu", "host"]
+        // DirectX: Triton blendet Texturen in 4-KB-Schritten in den Gast ein; Hypervisor.framework arbeitet
+        // sonst mit 16-KB-Seiten, verwirft diese Bereiche und QEMU bricht beim Zugriff ab (wie UTM).
+        a += ["-accel", display == .virtioGPUGL ? "hvf,ipa-granule-size=0x1000" : "hvf", "-cpu", "host"]
         a += ["-smp", "\(max(1, config.cpuCount))"]
         a += ["-m", "\(max(512, config.memoryMB))"]
 
