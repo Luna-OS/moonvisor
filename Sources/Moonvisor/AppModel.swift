@@ -119,7 +119,8 @@ final class AppModel {
                     entry.state = state
                     if let info {
                         // Im DirectX-Modus kommt das Bild über SPICE (IOSurface), sonst über VNC.
-                        let spice = info.config?.graphics == .directX && FileManager.default.fileExists(atPath: info.sockets.spice)
+                        // Der SPICE-Client wartet selbst, bis QEMU den Socket angelegt hat.
+                        let spice = info.config?.graphics == .directX
                         let socket = spice ? info.sockets.spice : info.sockets.vnc
                         if entry.displaySocket != socket {
                             entry.displaySocket = socket
