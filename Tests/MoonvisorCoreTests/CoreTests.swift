@@ -237,6 +237,13 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(version.trimmingCharacters(in: .whitespacesAndNewlines), EngineStore.requiredVersion)
     }
 
+    func testVirtualSizeIsReadFromImageInfo() {
+        let info = #"{"virtual-size": 329216, "filename": "efi-vars.qcow2", "format": "qcow2", "actual-size": 200704}"#
+        XCTAssertEqual(Toolchain.virtualSize(fromImageInfo: info), 329216)
+        XCTAssertEqual(Toolchain.virtualSize(fromImageInfo: "warning: x\n" + info), 329216)
+        XCTAssertNil(Toolchain.virtualSize(fromImageInfo: "kaputt"))
+    }
+
     func testCrashLogSkipsRendererNoise() {
         let log = """
         qemu-system-aarch64: virtio-gpu: blob mapping failed

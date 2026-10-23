@@ -148,11 +148,34 @@ public struct Toolchain: Sendable {
     /// Legt die UEFI-Variablen einer VM aus der Vorlage an bzw. wandelt rohe Variablen in qcow2 um.
     public func prepareEFIVars(for bundle: VMBundle) throws {
         let fm = FileManager.default
-        guard !fm.fileExists(atPath: bundle.efiVarsURL.path) else { return }
-        let source = fm.fileExists(atPath: bundle.legacyEfiVarsURL.path) ? bundle.legacyEfiVarsURL : firmwareVarsTemplate
-        let result = try ProcessRunner.run(qemuImg, ["convert", "-f", "raw", "-O", "qcow2", source.path, bundle.efiVarsURL.path])
+        if !fm.fileExists(atPath: bundle.efiVarsURL.path) {
+            let source = fm.fileExists(atPath: bundle.legacyEfiVarsURL.path) ? bundle.legacyEfiVarsURL : firmwareVarsTemplate
+            let result = try ProcessRunner.run(qemuImg, ["convert", "-f", "raw", "-O", "qcow2", source.path, bundle.efiVarsURL.path])
+            guard result.status == 0 else { throw MoonError.processFailed("qemu-img", result.output) }
+            if source == bundle.legacyEfiVarsURL { try? fm.removeItem(at: source) }
+        }
+        try padEFIVars(bundle.efiVarsURL)
+    }
+
+    /// QEMU 10 liefert die Variablen-Vorlage ungepolstert (329 216 Bytes). Die virt-Maschine verlangt aber für beide
+    /// Flash-Bausteine genau die Größe der Firmware (64 MB). Auch VMs, die schon mit der kurzen Vorlage angelegt
+    /// wurden, werden hier repariert; der neue Bereich ist leer.
+    func padEFIVars(_ vars: URL) throws {
+        guard let codeSize = (try? FileManager.default.attributesOfItem(atPath: firmwareCode.path))?[.size] as? Int64,
+              codeSize > 0 else { return }
+        let info = try ProcessRunner.run(qemuImg, ["info", "--output=json", "-f", "qcow2", vars.path])
+        guard info.status == 0 else { throw MoonError.processFailed("qemu-img", info.output) }
+        guard let current = Self.virtualSize(fromImageInfo: info.output), current < codeSize else { return }
+        let result = try ProcessRunner.run(qemuImg, ["resize", "-f", "qcow2", vars.path, String(codeSize)])
         guard result.status == 0 else { throw MoonError.processFailed("qemu-img", result.output) }
-        if source == bundle.legacyEfiVarsURL { try? fm.removeItem(at: source) }
+    }
+
+    /// `virtual-size` aus `qemu-img info --output=json`.
+    static func virtualSize(fromImageInfo output: String) -> Int64? {
+        guard let start = output.firstIndex(of: "{"), let end = output.lastIndex(of: "}"), start < end,
+              let data = String(output[start...end]).data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return (json["virtual-size"] as? NSNumber)?.int64Value
     }
 
     public static var isAppleSilicon: Bool {
