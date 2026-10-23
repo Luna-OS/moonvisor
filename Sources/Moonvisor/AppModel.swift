@@ -185,6 +185,10 @@ final class AppModel {
                     self.save(entry, config: config)
                 }
                 if entry.config.usesVirtioGPU { self.applyResolution(entry) }
+                if entry.config.graphics == .directX, (entry.toolsVersion ?? 0) >= 6 { entry.agent?.send("report") }
+            case "report":
+                guard let data = Data(base64Encoded: argument) else { return }
+                try? data.write(to: entry.bundle.windowsReportURL, options: .atomic)
             case "clip":
                 guard entry.config.sharedClipboard,
                       let data = Data(base64Encoded: argument),
@@ -367,10 +371,14 @@ final class AppModel {
     /// Öffnet `qemu.log` der VM (Konsole bzw. Texteditor), im DirectX-Modus auch `spice.log`.
     func openLog(_ entry: VMEntry) {
         NSWorkspace.shared.open(entry.bundle.logURL)
+        guard entry.config.graphics == .directX else { return }
         let spice = entry.bundle.url.appendingPathComponent("spice.log")
-        if entry.config.graphics == .directX, FileManager.default.fileExists(atPath: spice.path) {
-            NSWorkspace.shared.open(spice)
+        if FileManager.default.fileExists(atPath: spice.path) { NSWorkspace.shared.open(spice) }
+        if FileManager.default.fileExists(atPath: entry.bundle.windowsReportURL.path) {
+            NSWorkspace.shared.open(entry.bundle.windowsReportURL)
         }
+        // Für das nächste Öffnen einen frischen Bericht anfordern.
+        if (entry.toolsVersion ?? 0) >= 6 { entry.agent?.send("report") }
     }
 
     func shutdown(_ entry: VMEntry) {

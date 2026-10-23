@@ -288,6 +288,8 @@ public struct VMBundle: Hashable, Sendable, Identifiable {
     /// Hardware-Konfiguration je Schnappschuss mit Arbeitsspeicher.
     public var snapshotConfigsURL: URL { url.appendingPathComponent("snapshots", isDirectory: true) }
     public var logURL: URL { url.appendingPathComponent("qemu.log") }
+    /// Diagnosebericht der Moonvisor Tools aus Windows (Grafiktreiber, DirectX-Einrichtung).
+    public var windowsReportURL: URL { url.appendingPathComponent("windows-bericht.txt") }
 
     public func loadConfig() throws -> VMConfig {
         let data = try Data(contentsOf: configURL)

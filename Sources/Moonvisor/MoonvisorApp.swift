@@ -81,6 +81,8 @@ struct MoonCommands: Commands {
                 .disabled(vm?.state != .running)
             Button("Installationsmedium auswerfen") { if let vm { model.ejectInstallMedia(vm) } }
                 .disabled(vm?.config.installMediaAttached != true)
+            Button("Protokolle öffnen") { if let vm { model.openLog(vm) } }
+                .disabled(vm == nil)
             Divider()
             Button("Konfigurieren …") { if let vm { openWindow(id: "config", value: vm.id) } }
                 .disabled(vm == nil)
