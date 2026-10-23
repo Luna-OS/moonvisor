@@ -51,6 +51,16 @@ struct VMWindowContent: View {
                         ProgressView().controlSize(.large).tint(Moon.accent)
                         Text(entry.state == .stopping ? "Wird heruntergefahren …" : "\(entry.config.name) startet …")
                             .font(.system(size: 15, weight: .medium)).foregroundStyle(Moon.text)
+                        if let error = entry.display.lastError {
+                            Text("Bildschirm: \(error)")
+                                .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
+                                .multilineTextAlignment(.center)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: 480)
+                        }
+                        if entry.state == .running {
+                            Button("Protokoll öffnen") { model.openLog(entry) }.buttonStyle(.link)
+                        }
                     }
                 }
                 if entry.state == .paused {

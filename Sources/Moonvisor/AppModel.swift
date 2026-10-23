@@ -125,7 +125,7 @@ final class AppModel {
                         if entry.displaySocket != socket {
                             entry.displaySocket = socket
                             if spice {
-                                entry.display.connect(spicePath: socket)
+                                entry.display.connect(spicePath: socket, logURL: entry.bundle.url.appendingPathComponent("spice.log"))
                             } else {
                                 entry.display.connect(socketPath: socket)
                             }
@@ -348,9 +348,13 @@ final class AppModel {
         }
     }
 
-    /// Öffnet `qemu.log` der VM (Konsole bzw. Texteditor).
+    /// Öffnet `qemu.log` der VM (Konsole bzw. Texteditor), im DirectX-Modus auch `spice.log`.
     func openLog(_ entry: VMEntry) {
         NSWorkspace.shared.open(entry.bundle.logURL)
+        let spice = entry.bundle.url.appendingPathComponent("spice.log")
+        if entry.config.graphics == .directX, FileManager.default.fileExists(atPath: spice.path) {
+            NSWorkspace.shared.open(spice)
+        }
     }
 
     func shutdown(_ entry: VMEntry) {

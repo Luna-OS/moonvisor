@@ -159,7 +159,8 @@ public struct QEMUCommand: Sendable {
         a += ["-display", "none"]
         if display == .virtioGPUGL {
             // 3D-Bilder liefert QEMU nur über SPICE (IOSurface). VNC lehnt eine GL-Konsole ab und bricht den Start ab.
-            a += ["-spice", "unix=on,addr=\(e(sockets.spice)),disable-ticketing=on,gl=on,image-compression=off"]
+            // gl=es: OpenGL ES über ANGLE (Metal), wie UTM. Mit gl=on liefert die Engine kein Bild an den Client.
+            a += ["-spice", "unix=on,addr=\(e(sockets.spice)),disable-ticketing=on,gl=es,image-compression=off,playback-compression=off,streaming-video=off"]
         } else {
             a += ["-vnc", "unix:\(e(sockets.vnc))"]
         }
