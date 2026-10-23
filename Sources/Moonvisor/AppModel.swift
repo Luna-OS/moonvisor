@@ -21,6 +21,8 @@ final class VMEntry: Identifiable {
     /// In dieser Sitzung schon automatisch versucht (danach nur noch über den Knopf).
     var directXSetupTried = false
     @ObservationIgnored var directXSetupStarted: Date?
+    /// „Moonvisor Tools installieren“ wurde gestartet; Windows wartet auf die Bestätigung der Adminrechte.
+    var toolsInstallRequested = false
     /// Warum die VM zuletzt nicht starten konnte oder unerwartet beendet wurde.
     var lastFailure: String?
     let display = DisplaySession()
@@ -156,6 +158,7 @@ final class AppModel {
                         entry.gpuDriver = nil
                         entry.directXSetupRunning = false
                         entry.directXSetupTried = false
+                        entry.toolsInstallRequested = false
                     }
                     entry.loadThumbnail()
                 }
@@ -173,6 +176,7 @@ final class AppModel {
             switch command {
             case "hello":
                 entry.toolsActive = true
+                entry.toolsInstallRequested = false
                 entry.toolsVersion = Int(argument)
                 // Ältere Agenten ab Version 4 aktualisieren sich selbst.
                 if let version = Int(argument), version >= 4, version < GuestTools.version {
@@ -210,7 +214,7 @@ final class AppModel {
             case "gpu-setup":
                 if argument == "missing-tools" {
                     entry.directXSetupRunning = false
-                    self.errorMessage = "Für DirectX fehlen in Windows die aktuellen Moonvisor Tools. Öffne die CD „MOONTOOLS“ und führe „Moonvisor Tools installieren“ aus."
+                    self.errorMessage = "Für DirectX fehlen in Windows die aktuellen Moonvisor Tools. Wähle in der Menüleiste „Aktionen → Moonvisor Tools installieren“."
                 }
             case "img":
                 guard entry.config.sharedClipboard, let png = Data(base64Encoded: argument) else { return }
@@ -277,7 +281,7 @@ final class AppModel {
     func dropFiles(_ urls: [URL], into entry: VMEntry) {
         guard let agent = entry.agent, entry.toolsActive else { return }
         guard (entry.toolsVersion ?? 0) >= 4 else {
-            errorMessage = "Für Drag & Drop braucht die VM die neuen Moonvisor Tools. In Windows die CD „MOONTOOLS“ öffnen und „Moonvisor Tools installieren“ erneut ausführen."
+            errorMessage = "Für Drag & Drop braucht die VM die neuen Moonvisor Tools. Wähle in der Menüleiste „Aktionen → Moonvisor Tools installieren“."
             return
         }
         entry.transfers += 1
@@ -405,6 +409,33 @@ final class AppModel {
     func takeSnapshot(_ entry: VMEntry, name: String) {
         perform(entry, "Schnappschuss wird erstellt …") { bundle in
             try Snapshots.create(bundle, name: name, toolchain: try Toolchain.locate(requireTPM: false))
+        }
+    }
+
+    /// Installiert die Moonvisor Tools aus der App: öffnet in Windows „Ausführen“ und startet die Installation
+    /// von der CD „MOONTOOLS“. Windows fragt danach einmal nach Administratorrechten.
+    func installTools(_ entry: VMEntry) {
+        guard entry.state == .running, entry.config.guestOS == .windows11 else { return }
+        guard (GuestTools.discVersion(of: entry.bundle) ?? 0) >= GuestTools.firstDiscWithLauncher else {
+            errorMessage = "Diese VM läuft noch mit der CD einer älteren Moonvisor-Version. Fahre Windows herunter, starte die VM wieder und wähle dann erneut „Moonvisor Tools installieren“."
+            return
+        }
+        let layout = KeyMap.guestLayout
+        entry.busyMessage = "Moonvisor Tools werden installiert …"
+        let bundle = entry.bundle
+        worker.async {
+            do {
+                try VMRunner.runInGuest(bundle, command: GuestKeyboard.installToolsCommand, layout: layout)
+                DispatchQueue.main.async {
+                    entry.busyMessage = nil
+                    entry.toolsInstallRequested = true
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    entry.busyMessage = nil
+                    self.errorMessage = error.localizedDescription
+                }
+            }
         }
     }
 

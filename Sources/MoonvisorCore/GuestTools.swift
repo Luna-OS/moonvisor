@@ -11,14 +11,14 @@ import Foundation
 ///                `xfer-begin <id> drop|clip`, `xfer-dir <id> <pfad>`, `xfer-file <id> <pfad> <größe>`,
 ///                `xfer-data <id> <daten>`, `xfer-end <id>`
 public enum GuestTools {
-    public static let version = 6
+    public static let version = 7
     public static let portName = "io.moonvisor.agent"
     public static let volumeName = "MOONTOOLS"
 
     /// Erzeugt die Tools-CD, falls sie fehlt oder veraltet ist.
     public static func ensureDisc(for bundle: VMBundle) throws {
         let marker = "moonvisor-tools \(version)"
-        let stamp = bundle.url.appendingPathComponent(".tools-version")
+        let stamp = stampURL(bundle)
         if FileManager.default.fileExists(atPath: bundle.toolsDiscURL.path),
            (try? String(contentsOf: stamp, encoding: .utf8)) == marker {
             return
@@ -26,6 +26,17 @@ public enum GuestTools {
         try buildDisc(at: bundle.toolsDiscURL)
         try marker.write(to: stamp, atomically: true, encoding: .utf8)
     }
+
+    static func stampURL(_ bundle: VMBundle) -> URL { bundle.url.appendingPathComponent(".tools-version") }
+
+    /// Version der Tools-CD, mit der die VM zuletzt gestartet wurde (die CD wird nur beim Start erneuert).
+    public static func discVersion(of bundle: VMBundle) -> Int? {
+        guard let marker = try? String(contentsOf: stampURL(bundle), encoding: .utf8) else { return nil }
+        return Int(marker.replacingOccurrences(of: "moonvisor-tools ", with: "").trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Ab dieser CD-Version liegt `moontools.cmd` darauf, das „Moonvisor Tools installieren“ in der App braucht.
+    public static let firstDiscWithLauncher = 7
 
     static func windowsText(_ text: String) -> Data {
         // PowerShell 5 liest Skripte ohne BOM als ANSI; mit BOM bleiben Umlaute korrekt.
@@ -45,8 +56,10 @@ public enum GuestTools {
         try windowsText(directXSetupScript).write(to: tools.appendingPathComponent("setup-directx.ps1"))
         try windowsText(agentScript).write(to: tools.appendingPathComponent("moon-agent.ps1"))
         try "\(version)".write(to: tools.appendingPathComponent("version.txt"), atomically: true, encoding: .utf8)
-        try Data("@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0moon-tools\\install.ps1\"\r\n".utf8)
-            .write(to: staging.appendingPathComponent("Moonvisor Tools installieren.cmd"))
+        let launcher = Data("@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0moon-tools\\install.ps1\"\r\n".utf8)
+        try launcher.write(to: staging.appendingPathComponent("Moonvisor Tools installieren.cmd"))
+        // Kurzer Name ohne Leerzeichen: den tippt Moonvisor über „Ausführen“ (GuestKeyboard.installToolsCommand).
+        try launcher.write(to: staging.appendingPathComponent("moontools.cmd"))
 
         if fm.fileExists(atPath: output.path) { try fm.removeItem(at: output) }
         let result = try ProcessRunner.run(
@@ -581,7 +594,7 @@ public enum GuestTools {
     '@
 
     $name = 'io.moonvisor.agent'
-    $version = 6
+    $version = 7
     $clipLimit = 256MB
     function Connect-Host {
         while (-not [MoonAgent]::Open($name)) { Start-Sleep -Seconds 5 }

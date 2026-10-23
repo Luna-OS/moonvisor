@@ -246,6 +246,20 @@ public enum VMRunner {
         try withQMP(bundle) { try $0.sendKeys(["ctrl", "alt", "delete"]) }
     }
 
+    /// Öffnet in Windows „Ausführen“ (Windows+R), tippt `command` und bestätigt mit Enter.
+    public static func runInGuest(_ bundle: VMBundle, command: String, layout: GuestKeyboard.Layout) throws {
+        let strokes = try GuestKeyboard.keystrokes(for: command, layout: layout)
+        try withQMP(bundle) { qmp in
+            try qmp.sendKeys(["meta_l", "r"])
+            Thread.sleep(forTimeInterval: 1.5)
+            for keys in strokes {
+                try qmp.sendKeys(keys, holdMillis: 20)
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+            try qmp.sendKeys(["ret"])
+        }
+    }
+
     public static func captureThumbnail(_ bundle: VMBundle) throws {
         try withQMP(bundle) { try $0.screendump(to: bundle.thumbnailURL) }
     }

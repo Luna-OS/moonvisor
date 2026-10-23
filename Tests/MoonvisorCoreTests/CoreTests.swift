@@ -102,6 +102,19 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(GuestResolution.presets.allSatisfy { $0.width >= 1024 && $0.height >= 768 })
     }
 
+    func testInstallCommandTypesOnAllLayouts() throws {
+        for layout in [GuestKeyboard.Layout.us, .german, .swissGerman] {
+            let strokes = try GuestKeyboard.keystrokes(for: GuestKeyboard.installToolsCommand, layout: layout)
+            XCTAssertEqual(strokes.count, GuestKeyboard.installToolsCommand.count)
+        }
+        XCTAssertFalse(GuestKeyboard.installToolsCommand.lowercased().contains("y"))
+        XCTAssertFalse(GuestKeyboard.installToolsCommand.lowercased().contains("z"))
+        XCTAssertEqual(try GuestKeyboard.keystrokes(for: "\\:", layout: .german), [["alt_r", "minus"], ["shift", "dot"]])
+        XCTAssertEqual(try GuestKeyboard.keystrokes(for: "\\:", layout: .us), [["backslash"], ["shift", "semicolon"]])
+        XCTAssertEqual(try GuestKeyboard.keystrokes(for: "Zy", layout: .german), [["shift", "y"], ["z"]])
+        XCTAssertThrowsError(try GuestKeyboard.keystrokes(for: "{", layout: .us))
+    }
+
     func testDriverRedirectsStayEncrypted() {
         let insecure = URLRequest(url: URL(string: "http://fedorapeople.org/groups/virt/virtio-win/a.iso?x=1")!)
         XCTAssertEqual(DriverStore.secureRedirect(insecure).url?.absoluteString, "https://fedorapeople.org/groups/virt/virtio-win/a.iso?x=1")

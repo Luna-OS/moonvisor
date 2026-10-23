@@ -81,6 +81,8 @@ struct MoonCommands: Commands {
                 .disabled(vm?.state != .running)
             Button("Installationsmedium auswerfen") { if let vm { model.ejectInstallMedia(vm) } }
                 .disabled(vm?.config.installMediaAttached != true)
+            Button("Moonvisor Tools installieren") { if let vm { model.installTools(vm) } }
+                .disabled(vm?.state != .running || vm?.config.guestOS != .windows11)
             Button("Protokolle öffnen") { if let vm { model.openLog(vm) } }
                 .disabled(vm == nil)
             Divider()
