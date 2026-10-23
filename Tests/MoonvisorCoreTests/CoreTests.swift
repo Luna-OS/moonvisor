@@ -224,8 +224,21 @@ final class CoreTests: XCTestCase {
         XCTAssertFalse(args.contains("-vnc"))
         XCTAssertEqual(command.environment["NPT_BACKEND"], "dxmt")
         XCTAssertEqual(command.environment["RENDER_SERVER_EXEC_PATH"], server.path)
+        XCTAssertEqual(command.environment["XDG_RUNTIME_DIR"], "/t/mv")
+        XCTAssertTrue(args.contains { $0.contains("hostmem=8192M") })
         XCTAssertEqual(GraphicsMode.selectable(directX: false).contains(.directX), false)
         XCTAssertEqual(GraphicsMode.selectable(directX: true).last, .directX)
+    }
+
+    func testCrashLogSkipsRendererNoise() {
+        let log = """
+        qemu-system-aarch64: virtio-gpu: blob mapping failed
+        Assertion failed: (res), function x, file y.c, line 1.
+        Oct 23 03:32:02  virgl_render_server[1] <Debug>: npt: destroying Neptune context 9
+        swtpm: Data client disconnected
+        Oct 23 03:32:02  virgl_render_server[1] <Debug>: worker 2 exited with status 16777215
+        """
+        XCTAssertEqual(VMRunner.relevantLines(log), "qemu-system-aarch64: virtio-gpu: blob mapping failed\nAssertion failed: (res), function x, file y.c, line 1.")
     }
 
     func testToolsDiscContainsDirectXSetup() {

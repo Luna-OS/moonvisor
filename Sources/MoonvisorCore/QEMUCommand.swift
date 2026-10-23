@@ -172,7 +172,8 @@ public struct QEMUCommand: Sendable {
     }
 
     /// Gemeinsamer Grafikspeicher für Neptune (Texturen zwischen Gast und Metal).
-    static let gpuHostMemoryMB = 2048
+    /// Wie UTM: Triton legt Texturen und Puffer in diesem Bereich ab.
+    static let gpuHostMemoryMB = 8192
 
     /// Umgebung für den QEMU-Prozess. Mit DirectX braucht virglrenderer ANGLE (Metal), den Render-Server und DXMT.
     public var environment: [String: String] {
@@ -187,6 +188,9 @@ public struct QEMUCommand: Sendable {
         env["NPT_D3D12_LIBRARY_PATH"] = dxmt
         env["NPT_DXGI_LIBRARY_PATH"] = dxmt
         env["DYLD_FALLBACK_FRAMEWORK_PATH"] = frameworks.path
+        // virglrenderer legt hier den geteilten Speicher für Triton an (wie UTM). Ohne ihn bricht QEMU ab,
+        // sobald Windows den DirectX-Treiber benutzt.
+        env["XDG_RUNTIME_DIR"] = sockets.directory
         return env
     }
 
