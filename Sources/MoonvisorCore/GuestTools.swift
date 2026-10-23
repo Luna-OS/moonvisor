@@ -4,14 +4,14 @@ import Foundation
 /// der über einen virtio-serial-Port mit dem Mac spricht (Auflösung, Zwischenablage, Dateien).
 ///
 /// Protokoll (zeilenweise, UTF-8, Binärdaten als Base64):
-///   Mac → Gast:  `hello-host`, `resize <breite> <höhe>`, `update <skript>`, `install-3d`
+///   Mac → Gast:  `hello-host`, `resize <breite> <höhe>`, `update <skript>`, `install-3d`, `report`
 ///   Gast → Mac:  `hello <version>`, `display <breite> <höhe>`, `gpu viogpu3d|viogpudo|none`,
-///                `gpu-setup started|missing-tools|missing-drivers`
+///                `gpu-setup started|missing-tools|missing-drivers`, `report <text>`
 ///   beide:       `clip <text>`, `img <png>`,
 ///                `xfer-begin <id> drop|clip`, `xfer-dir <id> <pfad>`, `xfer-file <id> <pfad> <größe>`,
 ///                `xfer-data <id> <daten>`, `xfer-end <id>`
 public enum GuestTools {
-    public static let version = 5
+    public static let version = 6
     public static let portName = "io.moonvisor.agent"
     public static let volumeName = "MOONTOOLS"
 
@@ -123,6 +123,7 @@ public enum GuestTools {
     function Install-Triton {
         pnputil.exe /add-driver (Join-Path $base 'viogpu3d.inf') /install
         Write-Output "pnputil: $LASTEXITCODE"
+        pnputil.exe /enum-devices /class Display /drivers
         Set-Content -Path (Join-Path $base 'installed.txt') -Value (Get-Date -Format o)
     }
 
@@ -580,7 +581,7 @@ public enum GuestTools {
     '@
 
     $name = 'io.moonvisor.agent'
-    $version = 5
+    $version = 6
     $clipLimit = 256MB
     function Connect-Host {
         while (-not [MoonAgent]::Open($name)) { Start-Sleep -Seconds 5 }
@@ -596,6 +597,29 @@ public enum GuestTools {
         }
         return 'none'
     }
+    # Diagnose für den Mac: Grafikkarten, Treiber und das Protokoll der DirectX-Einrichtung.
+    function Get-Report {
+        $lines = New-Object Collections.Generic.List[string]
+        $lines.Add('Moonvisor-Bericht aus Windows, ' + (Get-Date -Format o))
+        $lines.Add("Agent $version, Grafiktreiber: " + (Get-GpuDriver))
+        $lines.Add('')
+        $lines.Add('== Grafikkarten ==')
+        Get-CimInstance Win32_VideoController | ForEach-Object {
+            $lines.Add("$($_.Name) | Status $($_.Status) | Fehlercode $($_.ConfigManagerErrorCode) | Treiber $($_.DriverVersion) | $($_.CurrentHorizontalResolution)x$($_.CurrentVerticalResolution)")
+        }
+        $lines.Add('')
+        $lines.Add('== pnputil /enum-devices /class Display /drivers ==')
+        pnputil.exe /enum-devices /class Display /drivers 2>&1 | ForEach-Object { $lines.Add([string]$_) }
+        $log = Join-Path $env:ProgramData 'Moonvisor\directx-setup.log'
+        $lines.Add('')
+        $lines.Add("== $log ==")
+        if (Test-Path $log) {
+            Get-Content $log -Tail 300 | ForEach-Object { $lines.Add([string]$_) }
+        } else {
+            $lines.Add('(nicht vorhanden)')
+        }
+        return ($lines -join "`r`n")
+    }
     function Send-Hello {
         [MoonAgent]::Send("hello $version")
         [MoonAgent]::Send('gpu ' + (Get-GpuDriver))
@@ -610,6 +634,9 @@ public enum GuestTools {
             try {
                 switch ($parts[0]) {
                     'hello-host' { Send-Hello }
+                    'report' {
+                        [MoonAgent]::Send('report ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Report))))
+                    }
                     'install-3d' {
                         # DirectX-Treiber einrichten: das Skript liegt auf der CD „MOONTOOLS“, die Treiber auf der DirectX-CD.
                         $setup = $null

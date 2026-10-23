@@ -124,7 +124,7 @@ struct VMWindowContent: View {
             return ("Die Moonvisor Tools in Windows sind zu alt für DirectX. Führe auf der CD „MOONTOOLS“ erneut „Moonvisor Tools installieren“ aus.", false)
         }
         if entry.directXSetupRunning {
-            return ("DirectX-Treiber wird eingerichtet. Windows startet dafür zwei- bis dreimal neu. Protokoll in Windows: C:\\ProgramData\\Moonvisor\\directx-setup.log", false)
+            return ("DirectX-Treiber wird eingerichtet. Windows startet dafür zwei- bis dreimal neu; zwischendurch zeigt das Fenster „Display output is not active“. Das dauert einige Minuten – die VM bitte nicht ausschalten.", false)
         }
         if DriverStore.cachedDirectXISO == nil {
             return ("Die DirectX-Treiber fehlen. Schalte die VM aus und starte sie neu, dann lädt Moonvisor sie herunter.", false)
