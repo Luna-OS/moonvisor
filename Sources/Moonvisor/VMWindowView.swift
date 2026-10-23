@@ -37,13 +37,16 @@ struct VMWindowContent: View {
     @Environment(\.openWindow) private var openWindow
     @State private var snapshotPrompt = false
     @State private var snapshotName = ""
+    @State private var directXHintHidden = false
+    /// Die Tools melden sich erst einige Zeit nach dem Windows-Start: vorher keinen Hinweis auf fehlende Tools zeigen.
+    @State private var toolsOverdue = false
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             if entry.state != .stopped {
                 VMDisplayView(session: entry.display, commandAsControl: entry.config.commandAsControl,
-                              autoResize: entry.config.usesVirtioGPU,
+                              autoResize: entry.config.usesVirtioGPU && entry.config.fixedResolution == nil,
                               onDropFiles: entry.toolsActive ? { urls in model.dropFiles(urls, into: entry) } : nil)
                     .ignoresSafeArea()
                 if !entry.display.connected {
@@ -62,6 +65,13 @@ struct VMWindowContent: View {
                             Button("Protokoll öffnen") { model.openLog(entry) }.buttonStyle(.link)
                         }
                     }
+                }
+                if entry.display.connected, entry.state == .running, !directXHintHidden, let hint = directXHint {
+                    VStack {
+                        Spacer()
+                        directXBanner(hint)
+                    }
+                    .padding(16)
                 }
                 if entry.state == .paused {
                     overlay {
@@ -82,6 +92,12 @@ struct VMWindowContent: View {
         .toolbarBackground(.visible, for: .windowToolbar)
         .modifier(FullScreenToolbar())
         .sheet(isPresented: $snapshotPrompt) { snapshotSheet }
+        .task(id: entry.display.connected) {
+            toolsOverdue = false
+            guard entry.display.connected else { return }
+            try? await Task.sleep(for: .seconds(90))
+            toolsOverdue = true
+        }
         .onAppear {
             if entry.config.startOnOpen && entry.state == .stopped { model.start(entry) }
         }
@@ -95,6 +111,52 @@ struct VMWindowContent: View {
             return "\(entry.state.displayName) · \(Int(entry.display.resolution.width))×\(Int(entry.display.resolution.height))"
         }
         return entry.state.displayName
+    }
+
+    /// Warum DirectX in Windows noch nicht läuft. nil: läuft, kein DirectX-Modus oder noch unbekannt.
+    private var directXHint: (text: String, canSetUp: Bool)? {
+        guard entry.config.graphics == .directX, entry.gpuDriver != "viogpu3d" else { return nil }
+        if !entry.toolsActive {
+            guard toolsOverdue else { return nil }
+            return ("DirectX braucht die Moonvisor Tools. Öffne in Windows die CD „MOONTOOLS“ und führe „Moonvisor Tools installieren“ aus.", false)
+        }
+        if (entry.toolsVersion ?? 0) < 5 {
+            return ("Die Moonvisor Tools in Windows sind zu alt für DirectX. Führe auf der CD „MOONTOOLS“ erneut „Moonvisor Tools installieren“ aus.", false)
+        }
+        if entry.directXSetupRunning {
+            return ("DirectX-Treiber wird eingerichtet. Windows startet dafür zwei- bis dreimal neu. Protokoll in Windows: C:\\ProgramData\\Moonvisor\\directx-setup.log", false)
+        }
+        if DriverStore.cachedDirectXISO == nil {
+            return ("Die DirectX-Treiber fehlen. Schalte die VM aus und starte sie neu, dann lädt Moonvisor sie herunter.", false)
+        }
+        guard entry.gpuDriver != nil else { return nil }
+        return ("DirectX ist in Windows noch nicht aktiv: Windows nutzt den einfachen Grafiktreiber, Spiele finden deshalb keine 3D-Grafikkarte.", true)
+    }
+
+    private func directXBanner(_ hint: (text: String, canSetUp: Bool)) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: entry.directXSetupRunning ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle.fill")
+                .foregroundStyle(Moon.gold)
+            Text(hint.text)
+                .font(.system(size: 12)).foregroundStyle(Moon.text)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if hint.canSetUp {
+                Button("DirectX-Treiber einrichten") { model.setUpDirectX(entry) }
+                    .buttonStyle(MoonPrimaryButtonStyle())
+                    .help("Windows startet dafür zwei- bis dreimal neu. Speichere vorher deine Arbeit.")
+            }
+            Button { directXHintHidden = true } label: { Image(systemName: "xmark") }
+                .buttonStyle(.plain).foregroundStyle(Moon.textMuted)
+                .help("Hinweis ausblenden")
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .frame(maxWidth: 720)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Moon.deep.opacity(0.92)))
+    }
+
+    private var resolutionSelection: Binding<GuestResolution?> {
+        Binding(get: { entry.config.fixedResolution }, set: { model.setResolution(entry, $0) })
     }
 
     private func overlay<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
@@ -180,6 +242,25 @@ struct VMWindowContent: View {
             }
             .help("Herunterfahren oder ausschalten")
             .disabled(entry.state == .stopped)
+
+            if entry.config.usesVirtioGPU {
+                Menu {
+                    Picker("Auflösung", selection: resolutionSelection) {
+                        Text("An Fenster anpassen").tag(GuestResolution?.none)
+                        ForEach(GuestResolution.presets) { resolution in
+                            Text(resolution.name).tag(GuestResolution?.some(resolution))
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    if !entry.toolsActive {
+                        Divider()
+                        Text("Wird angewendet, sobald die Moonvisor Tools in Windows laufen.")
+                    }
+                } label: {
+                    Label("Auflösung", systemImage: "display")
+                }
+                .help("Auflösung von Windows")
+            }
 
             Button { model.ctrlAltDelete(entry) } label: { Label("Strg+Alt+Entf", systemImage: "keyboard") }
                 .help("Strg+Alt+Entf senden")

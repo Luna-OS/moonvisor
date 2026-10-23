@@ -86,6 +86,20 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(config.graphics, .automatic)
         XCTAssertTrue(config.tpmEnabled)
         XCTAssertEqual(config.networkMode, .shared)
+        XCTAssertNil(config.fixedResolution)
+    }
+
+    func testFixedResolutionIsSaved() throws {
+        var config = VMConfig(name: "Auflösung", guestOS: .windows11, cpuCount: 4, memoryMB: 8192, diskSizeGB: 64)
+        config.fixedResolution = GuestResolution(width: 1920, height: 1080)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let loaded = try decoder.decode(VMConfig.self, from: encoder.encode(config))
+        XCTAssertEqual(loaded.fixedResolution, GuestResolution(width: 1920, height: 1080))
+        XCTAssertEqual(loaded.fixedResolution?.name, "1920 × 1080")
+        XCTAssertTrue(GuestResolution.presets.allSatisfy { $0.width >= 1024 && $0.height >= 768 })
     }
 
     func testDriverRedirectsStayEncrypted() {
