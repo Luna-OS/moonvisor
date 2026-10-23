@@ -18,6 +18,9 @@ final class VMEntry: Identifiable {
     var gpuDriver: String?
     /// Moonvisor richtet gerade den DirectX-Treiber im Gast ein.
     var directXSetupRunning = false
+    /// In dieser Sitzung schon automatisch versucht (danach nur noch über den Knopf).
+    var directXSetupTried = false
+    @ObservationIgnored var directXSetupStarted: Date?
     /// Warum die VM zuletzt nicht starten konnte oder unerwartet beendet wurde.
     var lastFailure: String?
     let display = DisplaySession()
@@ -40,6 +43,18 @@ final class VMEntry: Identifiable {
             thumbnail = image
             thumbnailDate = date
         }
+    }
+
+    /// Kann Moonvisor den DirectX-Treiber jetzt in Windows einrichten lassen?
+    var canSetUpDirectX: Bool {
+        config.graphics == .directX && toolsActive && (toolsVersion ?? 0) >= 5
+            && !directXSetupRunning && DriverStore.cachedDirectXISO != nil
+    }
+
+    /// Automatische Einrichtungsversuche über alle Sitzungen. Schlägt sie fehl, nicht bei jedem Start neu starten.
+    var directXAutoSetups: Int {
+        get { UserDefaults.standard.integer(forKey: "directXAutoSetups.\(config.id)") }
+        set { UserDefaults.standard.set(newValue, forKey: "directXAutoSetups.\(config.id)") }
     }
 
     var symbolName: String {
@@ -140,6 +155,7 @@ final class AppModel {
                         entry.toolsActive = false
                         entry.gpuDriver = nil
                         entry.directXSetupRunning = false
+                        entry.directXSetupTried = false
                     }
                     entry.loadThumbnail()
                 }
@@ -168,7 +184,7 @@ final class AppModel {
                     config.graphics = .virtio
                     self.save(entry, config: config)
                 }
-                if entry.config.usesVirtioGPU { entry.display.requestCurrentSize() }
+                if entry.config.usesVirtioGPU { self.applyResolution(entry) }
             case "clip":
                 guard entry.config.sharedClipboard,
                       let data = Data(base64Encoded: argument),
@@ -180,12 +196,12 @@ final class AppModel {
             case "gpu":
                 entry.gpuDriver = argument
                 // DirectX gewählt, Triton aber noch nicht aktiv: einmal pro Sitzung einrichten lassen.
-                if entry.config.graphics == .directX, argument != "viogpu3d", !entry.directXSetupRunning,
-                   (entry.toolsVersion ?? 0) >= 5, DriverStore.cachedDirectXISO != nil {
-                    entry.directXSetupRunning = true
-                    entry.agent?.send("install-3d")
+                if argument != "viogpu3d", !entry.directXSetupTried, entry.directXAutoSetups < 2, entry.canSetUpDirectX {
+                    entry.directXAutoSetups += 1
+                    self.setUpDirectX(entry)
                 } else if argument == "viogpu3d" {
                     entry.directXSetupRunning = false
+                    entry.directXAutoSetups = 0
                 }
             case "gpu-setup":
                 if argument == "missing-tools" {
@@ -381,6 +397,39 @@ final class AppModel {
     func takeSnapshot(_ entry: VMEntry, name: String) {
         perform(entry, "Schnappschuss wird erstellt …") { bundle in
             try Snapshots.create(bundle, name: name, toolchain: try Toolchain.locate(requireTPM: false))
+        }
+    }
+
+    /// Startet die Einrichtung des DirectX-Treibers (Triton) in Windows über die Moonvisor Tools.
+    func setUpDirectX(_ entry: VMEntry) {
+        guard entry.canSetUpDirectX else { return }
+        entry.directXSetupRunning = true
+        entry.directXSetupTried = true
+        entry.agent?.send("install-3d")
+        // Meldet sich Windows nach einigen Minuten noch immer ohne Triton, ist die Einrichtung gescheitert:
+        // dann wieder den Knopf anbieten.
+        let started = Date()
+        entry.directXSetupStarted = started
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6 * 60) { [weak entry] in
+            guard let entry, entry.directXSetupStarted == started, entry.gpuDriver != "viogpu3d" else { return }
+            entry.directXSetupRunning = false
+        }
+    }
+
+    /// Feste Auflösung setzen oder (nil) wieder an das Fenster anpassen.
+    func setResolution(_ entry: VMEntry, _ resolution: GuestResolution?) {
+        var config = entry.config
+        config.fixedResolution = resolution
+        save(entry, config: config)
+        applyResolution(entry)
+    }
+
+    /// Schickt die gewünschte Auflösung an die Moonvisor Tools.
+    func applyResolution(_ entry: VMEntry) {
+        if let fixed = entry.config.fixedResolution {
+            entry.agent?.requestResolution(width: fixed.width, height: fixed.height)
+        } else {
+            entry.display.requestCurrentSize()
         }
     }
 

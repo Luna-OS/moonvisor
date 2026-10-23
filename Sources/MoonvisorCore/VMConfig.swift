@@ -167,6 +167,8 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
     public var sharedClipboard: Bool = true
     /// Beim nächsten Start diesen Schnappschuss samt Arbeitsspeicher laden.
     public var resumeSnapshot: String?
+    /// Feste Gastauflösung; nil = an das Fenster anpassen (benötigt Moonvisor Tools und virtio-GPU).
+    public var fixedResolution: GuestResolution?
 
     public init(
         id: UUID = UUID(),
@@ -192,7 +194,7 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
         case version, id, name, guestOS, notes, createdAt, cpuCount, memoryMB, diskSizeGB, profile
         case networkMode, portForwards, bridgeInterface, macAddress, soundEnabled, tpmEnabled
         case installMediaPath, installMediaAttached, autoConfirmCDBoot, installMode, attachDriversDisc
-        case startOnOpen, commandAsControl, graphics, sharedClipboard, resumeSnapshot
+        case startOnOpen, commandAsControl, graphics, sharedClipboard, resumeSnapshot, fixedResolution
     }
 
     /// Fehlende Felder (ältere Konfigurationen) bekommen ihren Standardwert.
@@ -224,6 +226,7 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
         graphics = try c.decodeIfPresent(GraphicsMode.self, forKey: .graphics) ?? .automatic
         sharedClipboard = try c.decodeIfPresent(Bool.self, forKey: .sharedClipboard) ?? true
         resumeSnapshot = try c.decodeIfPresent(String.self, forKey: .resumeSnapshot)
+        fixedResolution = try c.decodeIfPresent(GuestResolution.self, forKey: .fixedResolution)
     }
 
     /// Lokal administrierte Unicast-MAC im QEMU-Präfix 52:54:00.
@@ -231,6 +234,33 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
         let bytes = (0..<3).map { _ in UInt8.random(in: 0...255) }
         return (["52", "54", "00"] + bytes.map { String(format: "%02x", $0) }).joined(separator: ":")
     }
+}
+
+/// Gastauflösung in Pixeln.
+public struct GuestResolution: Codable, Hashable, Sendable, Identifiable {
+    public var width: Int
+    public var height: Int
+
+    public init(width: Int, height: Int) {
+        self.width = width
+        self.height = height
+    }
+
+    public var id: String { name }
+    public var name: String { "\(width) × \(height)" }
+
+    /// Auswahl im Menü „Auflösung“. Kleiner als 1024 × 768 stellen die Moonvisor Tools nicht ein.
+    public static let presets: [GuestResolution] = [
+        GuestResolution(width: 1280, height: 800),
+        GuestResolution(width: 1440, height: 900),
+        GuestResolution(width: 1600, height: 900),
+        GuestResolution(width: 1680, height: 1050),
+        GuestResolution(width: 1920, height: 1080),
+        GuestResolution(width: 1920, height: 1200),
+        GuestResolution(width: 2560, height: 1440),
+        GuestResolution(width: 2560, height: 1600),
+        GuestResolution(width: 3840, height: 2160),
+    ]
 }
 
 /// Eine VM auf der Festplatte: ein Ordner `Name.moonvm` mit Konfiguration, Disk, EFI-Variablen und TPM-Zustand.
