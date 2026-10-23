@@ -237,6 +237,31 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(version.trimmingCharacters(in: .whitespacesAndNewlines), EngineStore.requiredVersion)
     }
 
+    func testCDBootIsConfirmedUntilWindowsIsOnTheDisk() throws {
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent("cdboot-\(UUID()).moonvm")
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: folder) }
+        let bundle = VMBundle(url: folder)
+        var config = VMConfig(name: "Neu", guestOS: .windows11, cpuCount: 4, memoryMB: 8192, diskSizeGB: 64)
+        config.installMediaPath = "/tmp/win11.iso"
+        config.installMediaAttached = true
+
+        fm.createFile(atPath: bundle.diskURL.path, contents: Data(count: 200_000))
+        XCTAssertTrue(Installation.shouldConfirmCDBoot(bundle: bundle, config: config))
+
+        // Nach dem ersten Teil des Setups ist die Platte mehrere GB groß: dann von der Platte starten.
+        let handle = try FileHandle(forWritingTo: bundle.diskURL)
+        try handle.truncate(atOffset: 3 << 30)
+        try handle.close()
+        XCTAssertFalse(Installation.shouldConfirmCDBoot(bundle: bundle, config: config))
+
+        // Ohne eingelegte ISO nie, auch bei leerer Platte.
+        fm.createFile(atPath: bundle.diskURL.path, contents: Data(count: 200_000))
+        config.installMediaAttached = false
+        XCTAssertFalse(Installation.shouldConfirmCDBoot(bundle: bundle, config: config))
+    }
+
     func testQcow2VirtualSizeIsReadFromHeader() throws {
         // Kopf einer mit qemu-img 10 aus edk2-arm-vars.fd erzeugten Datei (virtuelle Größe 329 216 Bytes).
         var header = [UInt8](repeating: 0, count: 104)
