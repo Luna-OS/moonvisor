@@ -203,7 +203,8 @@ struct VMWindowContent: View {
                 Text("\(entry.config.name) ist ausgeschaltet")
                     .font(.system(size: 16, weight: .semibold)).foregroundStyle(Moon.text)
                 if entry.config.installMediaAttached {
-                    Text(entry.config.autoConfirmCDBoot ? "Beim Start wird die Installation von der ISO begonnen." : "Installationsmedium ist eingelegt.")
+                    Text(Installation.shouldConfirmCDBoot(bundle: entry.bundle, config: entry.config)
+                         ? "Beim Start wird die Installation von der ISO begonnen." : "Installationsmedium ist eingelegt.")
                         .font(.system(size: 12)).foregroundStyle(Moon.textMuted)
                 }
                 if let failure = entry.lastFailure {

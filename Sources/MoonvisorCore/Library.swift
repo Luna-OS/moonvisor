@@ -150,9 +150,21 @@ public enum VMFactory {
 }
 
 public enum Installation {
+    /// Unter dieser Größe der Festplattendatei ist noch kein Windows installiert (Setup schreibt vor dem ersten
+    /// Neustart mehrere GB). Eine leere qcow2-Datei ist wenige hundert KB groß.
+    static let installedDiskThreshold: Int64 = 1 << 30
+
+    /// Soll Moonvisor beim Start „Press any key to boot from CD or DVD“ bestätigen? Ja, solange eine Windows-ISO
+    /// eingelegt und die Festplatte noch leer ist. Früher galt das nur für den allerersten Start; scheiterte der,
+    /// startete die Installation danach nicht mehr von selbst.
+    public static func shouldConfirmCDBoot(bundle: VMBundle, config: VMConfig) -> Bool {
+        guard config.guestOS == .windows11, config.installMediaAttached, config.resumeSnapshot == nil else { return false }
+        let size = (try? FileManager.default.attributesOfItem(atPath: bundle.diskURL.path))?[.size] as? NSNumber
+        return (size?.int64Value ?? 0) < installedDiskThreshold
+    }
+
     /// Vor jedem Start: Ein gelöschtes oder verschobenes Installationsmedium wird ausgeworfen, statt den Start
-    /// zu blockieren. Ein vorhandenes Medium bleibt eingelegt – die Festplatte steht in der Bootreihenfolge vorn,
-    /// und den CD-Boot-Tastendruck gibt es nur beim allerersten Start.
+    /// zu blockieren. Ein vorhandenes Medium bleibt eingelegt – die Festplatte steht in der Bootreihenfolge vorn.
     static func prepareForBoot(bundle: VMBundle, config: inout VMConfig) {
         guard config.installMediaAttached, let path = config.installMediaPath else { return }
         if !FileManager.default.fileExists(atPath: path) {

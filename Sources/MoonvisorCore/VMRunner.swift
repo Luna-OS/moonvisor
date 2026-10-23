@@ -139,6 +139,7 @@ public enum VMRunner {
         var command = QEMUCommand(config: config, bundle: bundle, toolchain: toolchain, sockets: sockets, extraDiscs: extraDiscs)
         // Ein Schnappschuss mit Arbeitsspeicher wird beim Start geladen. Das Laden in eine laufende VM
         // (loadvm) bringt QEMU 11 mit HVF zum Absturz, ein frischer Start mit -loadvm dagegen nicht.
+        let confirmCDBoot = Installation.shouldConfirmCDBoot(bundle: bundle, config: config)
         if let resume = config.resumeSnapshot {
             command.loadSnapshot = resume
             config.resumeSnapshot = nil
@@ -191,9 +192,7 @@ public enum VMRunner {
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(info).write(to: bundle.runtimeURL, options: .atomic)
 
-        if config.autoConfirmCDBoot {
-            config.autoConfirmCDBoot = false
-            try? bundle.saveConfig(config)
+        if confirmCDBoot {
             confirmCDBootPrompt(sockets: sockets)
         }
         return info
@@ -206,7 +205,8 @@ public enum VMRunner {
             guard let qmp = try? QMPClient(path: sockets.qmp) else { return }
             defer { qmp.close() }
             let start = Date()
-            while Date().timeIntervalSince(start) < 16 {
+            // Die Firmware versucht zuerst die leere NVMe-Platte; die Abfrage von Windows kommt erst danach.
+            while Date().timeIntervalSince(start) < 25 {
                 try? qmp.sendKeys(["ret"], holdMillis: 60)
                 usleep(400_000)
             }
