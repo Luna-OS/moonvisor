@@ -231,6 +231,12 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(GraphicsMode.selectable(directX: true).last, .directX)
     }
 
+    func testAppRequiresTheEngineTheRepositoryBuilds() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let version = try String(contentsOf: root.appendingPathComponent("engine/VERSION"), encoding: .utf8)
+        XCTAssertEqual(version.trimmingCharacters(in: .whitespacesAndNewlines), EngineStore.requiredVersion)
+    }
+
     func testCrashLogSkipsRendererNoise() {
         let log = """
         qemu-system-aarch64: virtio-gpu: blob mapping failed

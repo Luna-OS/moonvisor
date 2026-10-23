@@ -1,0 +1,325 @@
+--- a/target/arm/hvf/hvf.c
++++ b/target/arm/hvf/hvf.c
+@@ -2549,6 +2549,302 @@
+     return true;
+ }
+ 
++/*
++ * Moonvisor: data aborts without a valid instruction syndrome (ISV=0).
++ *
++ * Arm reports the syndrome only for single-register loads and stores without
++ * writeback. Pair accesses (LDP/STP), SIMD/FP accesses and writeback forms trap
++ * without it. They reach QEMU when the guest touches guest-physical memory
++ * that nothing backs, e.g. a virtio-gpu hostmem blob the 3D renderer could not
++ * provide. Asserting there takes the whole VM down, so decode the common forms
++ * and perform the access through the address space instead: reads of unbacked
++ * memory return zeros, writes are dropped, MMIO works as usual.
++ */
++static bool moon_guest_access(CPUState *cpu, uint64_t va, uint8_t *buf,
++                              int len, bool is_write)
++{
++    while (len > 0) {
++        MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
++        int offset = va & 0xfff;
++        int chunk = MIN(len, 0x1000 - offset);
++        hwaddr page = cpu_get_phys_page_attrs_debug(cpu, va & ~0xfffULL,
++                                                    &attrs);
++
++        if (page == (hwaddr)-1) {
++            return false;
++        }
++        if (is_write) {
++            address_space_write(&address_space_memory, page + offset,
++                                MEMTXATTRS_UNSPECIFIED, buf, chunk);
++        } else {
++            address_space_read(&address_space_memory, page + offset,
++                               MEMTXATTRS_UNSPECIFIED, buf, chunk);
++        }
++        va += chunk;
++        buf += chunk;
++        len -= chunk;
++    }
++    return true;
++}
++
++static void moon_reg_to_bytes(CPUARMState *env, int reg, bool vector,
++                              uint8_t *buf, int size)
++{
++    if (vector) {
++        memcpy(buf, &env->vfp.zregs[reg], size);
++        return;
++    }
++    uint64_t val = reg == 31 ? 0 : env->xregs[reg];
++    for (int i = 0; i < size; i++) {
++        buf[i] = val >> (8 * i);
++    }
++}
++
++/* sign: 0 = zero-extend, 32 or 64 = sign-extend to that width */
++static void moon_bytes_to_reg(CPUARMState *env, int reg, bool vector,
++                              const uint8_t *buf, int size, int sign)
++{
++    if (vector) {
++        memset(&env->vfp.zregs[reg], 0, sizeof(env->vfp.zregs[reg]));
++        memcpy(&env->vfp.zregs[reg], buf, size);
++        return;
++    }
++    if (reg == 31) {
++        return;
++    }
++    uint64_t val = 0;
++    for (int i = size - 1; i >= 0; i--) {
++        val = (val << 8) | buf[i];
++    }
++    if (sign) {
++        val = sextract64(val, 0, size * 8);
++        if (sign == 32) {
++            val &= 0xffffffffULL;
++        }
++    }
++    env->xregs[reg] = val;
++}
++
++static uint64_t moon_extend_reg(uint64_t val, int option, int shift)
++{
++    switch (option) {
++    case 2: /* UXTW */
++        val = (uint32_t)val;
++        break;
++    case 6: /* SXTW */
++        val = (int64_t)(int32_t)val;
++        break;
++    default: /* LSL / UXTX / SXTX */
++        break;
++    }
++    return val << shift;
++}
++
++/* Returns false for encodings it does not know. */
++static bool moon_emulate_no_isv(CPUState *cpu)
++{
++    CPUARMState *env = &ARM_CPU(cpu)->env;
++    uint8_t buf[64];
++    uint32_t insn;
++
++    if (!moon_guest_access(cpu, env->pc, buf, 4, false)) {
++        return false;
++    }
++    insn = buf[0] | buf[1] << 8 | buf[2] << 16 | (uint32_t)buf[3] << 24;
++
++    if ((insn & 0x3a000000) == 0x28000000) {
++        /* LDP, STP, LDNP, STNP, LDPSW (integer and SIMD/FP) */
++        int opc = extract32(insn, 30, 2);
++        bool vector = extract32(insn, 26, 1);
++        int mode = extract32(insn, 23, 2);
++        bool load = extract32(insn, 22, 1);
++        int64_t imm7 = sextract32(insn, 15, 7);
++        int rt2 = extract32(insn, 10, 5);
++        int rn = extract32(insn, 5, 5);
++        int rt = extract32(insn, 0, 5);
++        int size, sign = 0;
++        uint64_t base = env->xregs[rn];
++        uint64_t addr;
++
++        if (vector) {
++            if (opc == 3) {
++                return false;
++            }
++            size = 4 << opc;
++        } else if (opc == 0) {
++            size = 4;
++        } else if (opc == 2) {
++            size = 8;
++        } else if (opc == 1 && load && mode != 0) {
++            size = 4;
++            sign = 64;
++        } else {
++            return false;
++        }
++        addr = mode == 1 ? base : base + imm7 * size;
++        if (load) {
++            if (!moon_guest_access(cpu, addr, buf, 2 * size, false)) {
++                return false;
++            }
++            moon_bytes_to_reg(env, rt, vector, buf, size, sign);
++            moon_bytes_to_reg(env, rt2, vector, buf + size, size, sign);
++        } else {
++            moon_reg_to_bytes(env, rt, vector, buf, size);
++            moon_reg_to_bytes(env, rt2, vector, buf + size, size);
++            if (!moon_guest_access(cpu, addr, buf, 2 * size, true)) {
++                return false;
++            }
++        }
++        if (mode == 1 || mode == 3) {
++            env->xregs[rn] = base + imm7 * size;
++        }
++        return true;
++    }
++
++    if ((insn & 0x3b000000) == 0x38000000 ||
++        (insn & 0x3b000000) == 0x39000000) {
++        /* LDR/STR (immediate, unscaled, pre/post-index, register offset) */
++        int sz = extract32(insn, 30, 2);
++        bool vector = extract32(insn, 26, 1);
++        bool unsigned_imm = extract32(insn, 24, 1);
++        int opc = extract32(insn, 22, 2);
++        int rn = extract32(insn, 5, 5);
++        int rt = extract32(insn, 0, 5);
++        uint64_t base = env->xregs[rn];
++        uint64_t addr;
++        bool load, writeback = false;
++        int size, sign = 0;
++        int64_t step = 0;
++
++        if (vector) {
++            if (opc & 2) {
++                if (sz != 0) {
++                    return false;
++                }
++                size = 16;
++            } else {
++                size = 1 << sz;
++            }
++            load = opc & 1;
++        } else {
++            size = 1 << sz;
++            load = opc != 0;
++            if (opc == 2) {
++                if (sz == 3) {
++                    return true; /* PRFM: nothing to do */
++                }
++                sign = 64;
++            } else if (opc == 3) {
++                if (sz >= 2) {
++                    return false;
++                }
++                sign = 32;
++            }
++        }
++
++        if (unsigned_imm) {
++            addr = base + (uint64_t)extract32(insn, 10, 12) * size;
++        } else if (!extract32(insn, 21, 1)) {
++            int64_t imm9 = sextract32(insn, 12, 9);
++            switch (extract32(insn, 10, 2)) {
++            case 1: /* post-index */
++                addr = base;
++                step = imm9;
++                writeback = true;
++                break;
++            case 3: /* pre-index */
++                addr = base + imm9;
++                step = imm9;
++                writeback = true;
++                break;
++            default: /* unscaled, unprivileged */
++                addr = base + imm9;
++                break;
++            }
++        } else if (extract32(insn, 10, 2) == 2) {
++            int rm = extract32(insn, 16, 5);
++            int option = extract32(insn, 13, 3);
++            int shift = extract32(insn, 12, 1) ? ctz32(size) : 0;
++            uint64_t index = rm == 31 ? 0 : env->xregs[rm];
++            addr = base + moon_extend_reg(index, option, shift);
++        } else {
++            return false; /* atomics and others */
++        }
++
++        if (load) {
++            if (!moon_guest_access(cpu, addr, buf, size, false)) {
++                return false;
++            }
++            moon_bytes_to_reg(env, rt, vector, buf, size, sign);
++        } else {
++            moon_reg_to_bytes(env, rt, vector, buf, size);
++            if (!moon_guest_access(cpu, addr, buf, size, true)) {
++                return false;
++            }
++        }
++        if (writeback) {
++            env->xregs[rn] = base + step;
++        }
++        return true;
++    }
++
++    if ((insn & 0xbfbf0000) == 0x0c000000 ||
++        (insn & 0xbfa00000) == 0x0c800000) {
++        /* LD1/ST1 (multiple structures, one element per register) */
++        bool q = extract32(insn, 30, 1);
++        bool post = extract32(insn, 23, 1);
++        bool load = extract32(insn, 22, 1);
++        int rm = extract32(insn, 16, 5);
++        int opcode = extract32(insn, 12, 4);
++        int rn = extract32(insn, 5, 5);
++        int rt = extract32(insn, 0, 5);
++        int bytes = q ? 16 : 8;
++        int count;
++        uint64_t base = env->xregs[rn];
++
++        switch (opcode) {
++        case 0x7:
++            count = 1;
++            break;
++        case 0xa:
++            count = 2;
++            break;
++        case 0x6:
++            count = 3;
++            break;
++        case 0x2:
++            count = 4;
++            break;
++        default:
++            return false; /* LD2/LD3/LD4 interleave elements */
++        }
++        if (load) {
++            if (!moon_guest_access(cpu, base, buf, count * bytes, false)) {
++                return false;
++            }
++            for (int i = 0; i < count; i++) {
++                moon_bytes_to_reg(env, (rt + i) % 32, true, buf + i * bytes,
++                                  bytes, 0);
++            }
++        } else {
++            for (int i = 0; i < count; i++) {
++                moon_reg_to_bytes(env, (rt + i) % 32, true, buf + i * bytes,
++                                  bytes);
++            }
++            if (!moon_guest_access(cpu, base, buf, count * bytes, true)) {
++                return false;
++            }
++        }
++        if (post) {
++            env->xregs[rn] = base + (rm == 31 ? (uint64_t)count * bytes
++                                              : env->xregs[rm]);
++        }
++        return true;
++    }
++
++    return false;
++}
++
+ int hvf_vcpu_exec(CPUState *cpu)
+ {
+     ARMCPU *arm_cpu = ARM_CPU(cpu);
+@@ -2684,7 +2980,18 @@
+             break;
+         }
+ 
+-        assert(isv);
++        if (!isv) {
++            cpu_synchronize_state(cpu);
++            if (!moon_emulate_no_isv(cpu)) {
++                warn_report_once("HVF: skipped instruction at 0x%llx without "
++                                 "syndrome accessing 0x%llx",
++                                 (unsigned long long)env->pc,
++                                 (unsigned long long)
++                                 hvf_exit->exception.physical_address);
++            }
++            advance_pc = true;
++            break;
++        }
+ 
+         if (iswrite) {
+             val = hvf_get_reg(cpu, srt);
