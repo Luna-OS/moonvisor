@@ -161,13 +161,39 @@ public struct Toolchain: Sendable {
     /// Flash-Bausteine genau die Größe der Firmware (64 MB). Auch VMs, die schon mit der kurzen Vorlage angelegt
     /// wurden, werden hier repariert; der neue Bereich ist leer.
     func padEFIVars(_ vars: URL) throws {
-        guard let codeSize = (try? FileManager.default.attributesOfItem(atPath: firmwareCode.path))?[.size] as? Int64,
-              codeSize > 0 else { return }
-        let info = try ProcessRunner.run(qemuImg, ["info", "--output=json", "-f", "qcow2", vars.path])
-        guard info.status == 0 else { throw MoonError.processFailed("qemu-img", info.output) }
-        guard let current = Self.virtualSize(fromImageInfo: info.output), current < codeSize else { return }
+        let code = firmwareCode.resolvingSymlinksInPath()
+        guard let codeSize = ((try? FileManager.default.attributesOfItem(atPath: code.path))?[.size] as? NSNumber)?.int64Value,
+              codeSize > 0 else {
+            throw MoonError.processFailed("UEFI-Variablen", "Größe der Firmware \(code.path) nicht lesbar.")
+        }
+        guard try efiVarsSize(vars) < codeSize else { return }
         let result = try ProcessRunner.run(qemuImg, ["resize", "-f", "qcow2", vars.path, String(codeSize)])
-        guard result.status == 0 else { throw MoonError.processFailed("qemu-img", result.output) }
+        guard result.status == 0 else { throw MoonError.processFailed("qemu-img resize", result.output) }
+        // Lieber hier mit klarer Meldung abbrechen als QEMU mit „pflash1 block backend provides …“ scheitern lassen.
+        let padded = try efiVarsSize(vars)
+        guard padded >= codeSize else {
+            throw MoonError.processFailed("UEFI-Variablen", "\(vars.lastPathComponent) hat \(padded) statt \(codeSize) Bytes.")
+        }
+    }
+
+    /// Virtuelle Größe von efi-vars.qcow2: aus dem qcow2-Kopf, sonst über qemu-img info.
+    func efiVarsSize(_ vars: URL) throws -> Int64 {
+        if let size = Self.qcow2VirtualSize(vars) { return size }
+        let info = try ProcessRunner.run(qemuImg, ["info", "--output=json", "-f", "qcow2", vars.path])
+        guard info.status == 0, let size = Self.virtualSize(fromImageInfo: info.output) else {
+            throw MoonError.processFailed("qemu-img info", info.output)
+        }
+        return size
+    }
+
+    /// qcow2 beginnt mit „QFI\u{FB}“; die virtuelle Größe steht big-endian in den Bytes 24–31.
+    static func qcow2VirtualSize(_ url: URL) -> Int64? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 32) else { return nil }
+        let header = [UInt8](data)
+        guard header.count == 32, header[0..<4] == [0x51, 0x46, 0x49, 0xFB] else { return nil }
+        return header[24..<32].reduce(Int64(0)) { $0 << 8 | Int64($1) }
     }
 
     /// `virtual-size` aus `qemu-img info --output=json`.

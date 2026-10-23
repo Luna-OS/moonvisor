@@ -344,7 +344,8 @@ final class AppModel {
         refreshStates()
         guard status != 0, !expected else { return }
         let log = VMRunner.recentLog(of: entry.bundle)
-        let message = "\(entry.config.name) wurde unerwartet beendet (Code \(status))."
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let message = "\(entry.config.name) wurde unerwartet beendet (Code \(status), Moonvisor \(version))."
             + (log.isEmpty ? "" : "\n\n" + log)
         entry.lastFailure = message
         errorMessage = message
