@@ -157,10 +157,11 @@ public struct QEMUCommand: Sendable {
         }
 
         a += ["-display", "none"]
-        a += ["-vnc", "unix:\(e(sockets.vnc))"]
         if display == .virtioGPUGL {
-            // 3D-Bilder liefert QEMU nur über SPICE (IOSurface), nicht über VNC.
+            // 3D-Bilder liefert QEMU nur über SPICE (IOSurface). VNC lehnt eine GL-Konsole ab und bricht den Start ab.
             a += ["-spice", "unix=on,addr=\(e(sockets.spice)),disable-ticketing=on,gl=on,image-compression=off"]
+        } else {
+            a += ["-vnc", "unix:\(e(sockets.vnc))"]
         }
         a += ["-qmp", "unix:\(e(sockets.qmp)),server=on,wait=off"]
         if let loadSnapshot {
