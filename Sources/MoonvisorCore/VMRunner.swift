@@ -80,7 +80,15 @@ public enum VMRunner {
 
     static func logTail(_ url: URL) -> String {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
-        return text.split(separator: "\n").suffix(8).joined(separator: "\n")
+        return relevantLines(text)
+    }
+
+    /// Die letzten aussagekräftigen Zeilen: Debug-Ausgaben des 3D-Renderers und Aufräummeldungen beim Beenden
+    /// verdecken sonst die eigentliche Fehlermeldung.
+    static func relevantLines(_ text: String, count: Int = 8) -> String {
+        let noise = ["<Debug>", "swtpm: Data client disconnected"]
+        let lines = text.split(separator: "\n").filter { line in !noise.contains { line.contains($0) } }
+        return lines.suffix(count).joined(separator: "\n")
     }
 
     /// Startet die VM. Die Prozesse laufen unabhängig vom Aufrufer weiter (wie bei Parallels' VM-Prozess),
