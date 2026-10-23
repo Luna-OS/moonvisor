@@ -6,7 +6,8 @@ import Foundation
 /// Release `engine-<version>` veröffentlicht. Das Manifest daneben enthält die SHA-256-Prüfsumme.
 public enum EngineStore {
     /// Engine-Version, zu der diese App passt.
-    public static let requiredVersion = "1"
+    /// Muss zu engine/VERSION passen (geprüft im Test).
+    public static let requiredVersion = "2"
     public static let repository = "Luna-OS/moonvisor"
 
     public static var releaseURL: URL {
