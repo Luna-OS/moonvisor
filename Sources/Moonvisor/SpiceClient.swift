@@ -187,7 +187,7 @@ final class SpiceClient: @unchecked Sendable, DisplayClient {
             switch type {
             case SpiceMsg.displayGLScanoutUnix where data.count >= 20:
                 let w = Int(le32(data, 0)), h = Int(le32(data, 4))
-                guard let fd = channel.takeFD() else {
+                guard let fd = try channel.readPassedFD() else {
                     log?("Scanout \(w)×\(h) ohne Dateideskriptor")
                     continue
                 }
@@ -498,9 +498,11 @@ final class SpiceChannel: @unchecked Sendable {
         try? write(le16(type) + le32(UInt32(payload.count)) + payload)
     }
 
-    /// Ältester empfangener Dateideskriptor (gehört dann dem Aufrufer).
-    func takeFD() -> Int32? {
-        receivedFDs.isEmpty ? nil : receivedFDs.removeFirst()
+    /// Liest den Dateideskriptor, den der Server direkt nach einer Nachricht wie `GL_SCANOUT_UNIX` schickt:
+    /// ein eigenes Byte („@“), an dem der Deskriptor hängt. Er gehört dann dem Aufrufer.
+    func readPassedFD() throws -> Int32? {
+        _ = try read(exactly: 1)
+        return receivedFDs.isEmpty ? nil : receivedFDs.removeFirst()
     }
 
     private func write(_ bytes: [UInt8]) throws {
