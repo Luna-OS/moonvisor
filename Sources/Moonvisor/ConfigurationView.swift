@@ -332,8 +332,15 @@ struct ConfigurationView: View {
                     .toggleStyle(.switch).tint(Moon.accent)
             }
             row("Moonvisor Tools") {
-                Text(toolsStatus)
-                    .font(.system(size: 12)).foregroundStyle(entry.toolsActive && !toolsOutdated ? Moon.mint : Moon.textMuted)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(toolsStatus)
+                        .font(.system(size: 12)).foregroundStyle(entry.toolsActive && !toolsOutdated ? Moon.mint : Moon.textMuted)
+                    if entry.config.guestOS == .windows11, entry.state == .running, !entry.toolsActive {
+                        Button("Moonvisor Tools installieren") { model.installTools(entry) }
+                            .buttonStyle(.link)
+                            .help("Moonvisor öffnet in Windows „Ausführen“ und startet die Installation. Windows muss dafür angemeldet sein.")
+                    }
+                }
             }
             row("Tastatur") {
                 VStack(alignment: .leading, spacing: 4) {
@@ -357,10 +364,10 @@ struct ConfigurationView: View {
 
     private var toolsStatus: String {
         if !entry.toolsActive {
-            return "Nicht verbunden. In Windows die CD „MOONTOOLS“ öffnen und „Moonvisor Tools installieren“ ausführen."
+            return "Nicht verbunden. Bei laufender VM in der Menüleiste „Aktionen → Moonvisor Tools installieren“ wählen."
         }
         if toolsOutdated {
-            return "Veraltet – Text-Zwischenablage geht, für Dateien, Bilder und freie Auflösung in Windows „Moonvisor Tools installieren“ von der CD „MOONTOOLS“ erneut ausführen."
+            return "Veraltet – Text-Zwischenablage geht, für Dateien, Bilder und freie Auflösung „Aktionen → Moonvisor Tools installieren“ wählen."
         }
         return "Aktiv – Auflösung, Zwischenablage und Drag & Drop werden abgeglichen."
     }

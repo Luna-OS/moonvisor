@@ -113,38 +113,50 @@ struct VMWindowContent: View {
         return entry.state.displayName
     }
 
-    /// Warum DirectX in Windows noch nicht läuft. nil: läuft, kein DirectX-Modus oder noch unbekannt.
-    private var directXHint: (text: String, canSetUp: Bool)? {
+    private enum HintAction { case installTools, setUpDirectX }
+
+    /// Hinweis unten im VM-Fenster: Tools-Installation läuft, Tools fehlen, oder warum DirectX noch nicht läuft.
+    private var directXHint: (text: String, action: HintAction?)? {
+        if entry.toolsInstallRequested && !entry.toolsActive {
+            return ("Moonvisor Tools werden installiert. Windows fragt nach Administratorrechten – klicke im VM-Fenster auf „Ja“. Danach verbinden sich die Tools nach etwa einer Minute von selbst.", nil)
+        }
         guard entry.config.graphics == .directX, entry.gpuDriver != "viogpu3d" else { return nil }
         if !entry.toolsActive {
             guard toolsOverdue else { return nil }
-            return ("DirectX braucht die Moonvisor Tools. Öffne in Windows die CD „MOONTOOLS“ und führe „Moonvisor Tools installieren“ aus.", false)
+            return ("DirectX braucht die Moonvisor Tools. Melde dich in Windows an, dann installiert Moonvisor sie für dich.", .installTools)
         }
         if (entry.toolsVersion ?? 0) < 5 {
-            return ("Die Moonvisor Tools in Windows sind zu alt für DirectX. Führe auf der CD „MOONTOOLS“ erneut „Moonvisor Tools installieren“ aus.", false)
+            return ("Die Moonvisor Tools in Windows sind zu alt für DirectX.", .installTools)
         }
         if entry.directXSetupRunning {
-            return ("DirectX-Treiber wird eingerichtet. Windows startet dafür zwei- bis dreimal neu; zwischendurch zeigt das Fenster „Display output is not active“. Das dauert einige Minuten – die VM bitte nicht ausschalten.", false)
+            return ("DirectX-Treiber wird eingerichtet. Windows startet dafür zwei- bis dreimal neu; zwischendurch zeigt das Fenster „Display output is not active“. Das dauert einige Minuten – die VM bitte nicht ausschalten.", nil)
         }
         if DriverStore.cachedDirectXISO == nil {
-            return ("Die DirectX-Treiber fehlen. Schalte die VM aus und starte sie neu, dann lädt Moonvisor sie herunter.", false)
+            return ("Die DirectX-Treiber fehlen. Schalte die VM aus und starte sie neu, dann lädt Moonvisor sie herunter.", nil)
         }
         guard entry.gpuDriver != nil else { return nil }
-        return ("DirectX ist in Windows noch nicht aktiv: Windows nutzt den einfachen Grafiktreiber, Spiele finden deshalb keine 3D-Grafikkarte.", true)
+        return ("DirectX ist in Windows noch nicht aktiv: Windows nutzt den einfachen Grafiktreiber, Spiele finden deshalb keine 3D-Grafikkarte.", .setUpDirectX)
     }
 
-    private func directXBanner(_ hint: (text: String, canSetUp: Bool)) -> some View {
+    private func directXBanner(_ hint: (text: String, action: HintAction?)) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: entry.directXSetupRunning ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle.fill")
+            Image(systemName: entry.directXSetupRunning || entry.toolsInstallRequested ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle.fill")
                 .foregroundStyle(Moon.gold)
             Text(hint.text)
                 .font(.system(size: 12)).foregroundStyle(Moon.text)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            if hint.canSetUp {
+            switch hint.action {
+            case .installTools:
+                Button("Moonvisor Tools installieren") { model.installTools(entry) }
+                    .buttonStyle(MoonPrimaryButtonStyle())
+                    .help("Moonvisor öffnet in Windows „Ausführen“ und startet die Installation. Windows muss dafür angemeldet sein.")
+            case .setUpDirectX:
                 Button("DirectX-Treiber einrichten") { model.setUpDirectX(entry) }
                     .buttonStyle(MoonPrimaryButtonStyle())
                     .help("Windows startet dafür zwei- bis dreimal neu. Speichere vorher deine Arbeit.")
+            case nil:
+                EmptyView()
             }
             Button { directXHintHidden = true } label: { Image(systemName: "xmark") }
                 .buttonStyle(.plain).foregroundStyle(Moon.textMuted)

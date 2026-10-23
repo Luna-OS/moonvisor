@@ -1,4 +1,5 @@
 import Carbon.HIToolbox
+import MoonvisorCore
 
 /// Übersetzt macOS-Tastencodes (kVK_*) in PC-XT-Scancodes (Set 1).
 /// Erweiterte Codes (0xE0 xx) sind wie im QEMU-VNC-Protokoll als `0x80 | xx` kodiert.
@@ -39,6 +40,16 @@ enum KeyMap {
     ]
 
     /// Auf ISO-Tastaturen (z. B. deutsch) meldet macOS die Tasten „^“ und „<“ vertauscht.
+    /// Tastaturbelegung, mit der Moonvisor Text in Windows tippt: dieselbe wie auf dem Mac.
+    static var guestLayout: GuestKeyboard.Layout {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let raw = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else { return .us }
+        let id = Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue() as String
+        if id.contains("SwissGerman") || id.contains("Swiss") { return .swissGerman }
+        if id.contains("German") || id.contains("Austrian") { return .german }
+        return .us
+    }
+
     static let isISOKeyboard: Bool = KBGetLayoutType(Int16(LMGetKbdType())) == kKeyboardISO
 
     static func scancode(for keyCode: UInt16, commandAsControl: Bool) -> UInt32? {
