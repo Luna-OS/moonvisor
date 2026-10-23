@@ -226,6 +226,7 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(command.environment["RENDER_SERVER_EXEC_PATH"], server.path)
         XCTAssertEqual(command.environment["XDG_RUNTIME_DIR"], "/t/mv")
         XCTAssertTrue(args.contains { $0.contains("hostmem=8192M") })
+        XCTAssertEqual(args[args.firstIndex(of: "-accel")! + 1], "hvf,ipa-granule-size=0x1000")
         XCTAssertEqual(GraphicsMode.selectable(directX: false).contains(.directX), false)
         XCTAssertEqual(GraphicsMode.selectable(directX: true).last, .directX)
     }
