@@ -237,6 +237,19 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(version.trimmingCharacters(in: .whitespacesAndNewlines), EngineStore.requiredVersion)
     }
 
+    func testQcow2VirtualSizeIsReadFromHeader() throws {
+        // Kopf einer mit qemu-img 10 aus edk2-arm-vars.fd erzeugten Datei (virtuelle Größe 329 216 Bytes).
+        var header = [UInt8](repeating: 0, count: 104)
+        header.replaceSubrange(0..<8, with: [0x51, 0x46, 0x49, 0xFB, 0, 0, 0, 3])
+        header.replaceSubrange(24..<32, with: [0, 0, 0, 0, 0, 0x05, 0x06, 0x00])
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("vars-\(UUID()).qcow2")
+        try Data(header).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(Toolchain.qcow2VirtualSize(url), 329216)
+        try Data(repeating: 0, count: 64).write(to: url)
+        XCTAssertNil(Toolchain.qcow2VirtualSize(url))
+    }
+
     func testVirtualSizeIsReadFromImageInfo() {
         let info = #"{"virtual-size": 329216, "filename": "efi-vars.qcow2", "format": "qcow2", "actual-size": 200704}"#
         XCTAssertEqual(Toolchain.virtualSize(fromImageInfo: info), 329216)
