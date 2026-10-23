@@ -18,7 +18,7 @@ extension VNCClient: DisplayClient {}
 
 /// SPICE-Client für den DirectX-Modus.
 ///
-/// Mit `gl=on` rendert QEMU jedes Bild (2D wie 3D) in eine IOSurface und meldet sie per
+/// Mit `gl=es` rendert QEMU jedes Bild (2D wie 3D) in eine IOSurface und meldet sie per
 /// `GL_SCANOUT_UNIX`: über den Socket kommt das Leseende einer Pipe, in der die IOSurface-ID steht.
 /// Jede neue Bildfolge kündigt `GL_DRAW` an; der Client zeigt sie und bestätigt mit `GL_DRAW_DONE`.
 /// Umgesetzt sind nur die Kanäle, die Moonvisor braucht: Haupt-, Bild-, Eingabe- und Mauszeigerkanal.
@@ -334,8 +334,8 @@ enum SpiceMsg {
     static let mainAttachChannels: UInt16 = 104
     static let mainMouseModeRequest: UInt16 = 105
 
-    static let displayGLScanoutUnix: UInt16 = 316
-    static let displayGLDraw: UInt16 = 317
+    static let displayGLScanoutUnix: UInt16 = 320
+    static let displayGLDraw: UInt16 = 321
     static let displayInit: UInt16 = 101
     static let displayGLDrawDone: UInt16 = 104
 
