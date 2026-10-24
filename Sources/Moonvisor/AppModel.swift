@@ -30,6 +30,7 @@ final class VMEntry: Identifiable {
     @ObservationIgnored var displaySocket: String?
     /// QEMU-Prozess, zu dem Bild und Tools-Kanal gehören. Startet die VM mit demselben Socket neu, ist es eine neue Sitzung.
     @ObservationIgnored var runtimePID: Int32?
+    @ObservationIgnored var displayConnectedAt: Date?
     @ObservationIgnored var thumbnailDate: Date?
     /// Wann „Herunterfahren“ angefordert wurde. Die Firmware und das Windows-Setup reagieren nicht auf den
     /// ACPI-Ausschalter; dann soll die VM nicht ewig als „Wird heruntergefahren …“ dastehen.
@@ -137,7 +138,7 @@ final class AppModel {
         let captureThumbnails = tick % 15 == 0
         // Eigene Warteschlange: Aktionen wie Ausschalten sollen nicht hinter der Abfrage warten.
         poller.async {
-            var results: [(VMEntry, VMRunState, RuntimeInfo?)] = []
+            var results: [(VMEntry, VMRunState, RuntimeInfo?, VMRunState)] = []
             for (entry, bundle, previous) in snapshot {
                 let info = VMRunner.runtime(of: bundle)
                 var state = VMRunState.stopped
@@ -146,7 +147,7 @@ final class AppModel {
                     state = VMRunner.polledState(info) ?? (previous == .stopped ? .starting : previous)
                 }
                 if captureThumbnails, state == .running { try? VMRunner.captureThumbnail(bundle, timeout: 2) }
-                results.append((entry, state, info))
+                results.append((entry, state, info, previous))
             }
             DispatchQueue.main.async {
                 self.refreshRunning = false
@@ -154,14 +155,17 @@ final class AppModel {
                     self.refreshAgain = false
                     DispatchQueue.main.async { self.refreshStates() }
                 }
-                for (entry, state, info) in results {
+                for (entry, state, info, previous) in results {
+                    // Während der Abfrage wurde die VM gestartet, heruntergefahren o. Ä.: das Ergebnis ist veraltet.
+                    if entry.state != previous { continue }
                     // Ein Start läuft noch, die Abfrage kam ihm zuvor: nicht als ausgeschaltet anzeigen.
                     if entry.state == .starting && state == .stopped && entry.busyMessage != nil { continue }
                     // Übergangszustände nicht durch Zwischenstände überschreiben.
                     if entry.state == .stopping && state == .running {
-                        if let since = entry.shutdownRequested, Date().timeIntervalSince(since) > 30 {
+                        // Windows braucht beim Herunterfahren mit Updates mehrere Minuten; erst danach nachfragen.
+                        if let since = entry.shutdownRequested, Date().timeIntervalSince(since) > 120 {
                             entry.shutdownRequested = nil
-                            self.errorMessage = "„\(entry.config.name)“ reagiert nicht auf „Herunterfahren“, etwa solange noch die Firmware oder die Windows-Installation läuft. Mit „Ausschalten“ endet die VM sofort."
+                            self.errorMessage = "„\(entry.config.name)“ ist nach zwei Minuten noch nicht heruntergefahren. Installiert Windows gerade Updates, bitte weiter warten. Läuft noch die Firmware oder die Windows-Installation, reagiert die VM nicht auf „Herunterfahren“; dann beendet „Ausschalten“ sie sofort."
                         } else {
                             continue
                         }
@@ -176,11 +180,17 @@ final class AppModel {
                         // Neu verbinden, wenn die Verbindung abgerissen ist, die VM aber noch läuft (z. B. nach
                         // einem schnellen Neustart über moonctl mit demselben Socket).
                         let newSession = entry.displaySocket != socket || entry.runtimePID != info.qemuPID
-                        if newSession || entry.display.finished {
+                        // Nach einem Abriss höchstens alle zehn Sekunden neu verbinden.
+                        let retry = entry.display.finished
+                            && Date().timeIntervalSince(entry.displayConnectedAt ?? .distantPast) > 10
+                        if newSession || retry {
                             entry.displaySocket = socket
                             entry.runtimePID = info.qemuPID
+                            entry.displayConnectedAt = Date()
                             if spice {
-                                entry.display.connect(spicePath: socket, logURL: entry.bundle.url.appendingPathComponent("spice.log"))
+                                // Beim Neuverbinden das Protokoll fortsetzen: Es enthält den Grund für den Abriss.
+                                entry.display.connect(spicePath: socket, logURL: entry.bundle.url.appendingPathComponent("spice.log"),
+                                                      newLog: newSession)
                             } else {
                                 entry.display.connect(socketPath: socket)
                             }
@@ -441,6 +451,7 @@ final class AppModel {
 
     func powerOff(_ entry: VMEntry) {
         entry.state = .stopping
+        entry.shutdownRequested = nil
         perform(entry, "Wird ausgeschaltet …") { bundle in
             try? VMRunner.captureThumbnail(bundle, timeout: 2)
             try VMRunner.powerOff(bundle)
