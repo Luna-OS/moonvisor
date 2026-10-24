@@ -369,13 +369,16 @@ public enum VMRunner {
 
     public static func captureThumbnail(_ bundle: VMBundle, timeout: Double = 10) throws {
         let fm = FileManager.default
-        let fresh = bundle.url.appendingPathComponent(".thumbnail-new.png")
+        // Eigene Datei je Aufruf: Abfrage, Herunterfahren und Beenden können gleichzeitig ein Bild holen.
+        let fresh = bundle.url.appendingPathComponent(".thumbnail-\(UUID().uuidString).png")
         defer { try? fm.removeItem(at: fresh) }
         try withQMP(bundle, timeout: timeout) { try $0.screendump(to: fresh) }
         // QEMUs Ersatzbild („Guest has not initialized the display“) ersetzt keine echte Vorschau.
         guard !DisplayPlaceholder.matches(pngAt: fresh) else { return }
-        try? fm.removeItem(at: bundle.thumbnailURL)
-        try fm.moveItem(at: fresh, to: bundle.thumbnailURL)
+        // rename(2) ersetzt die alte Vorschau in einem Schritt; sie fehlt nie zwischendurch.
+        guard rename(fresh.path, bundle.thumbnailURL.path) == 0 else {
+            throw MoonError.processFailed("Vorschau", String(cString: strerror(errno)))
+        }
     }
 
     /// Wartet, bis die VM beendet ist.

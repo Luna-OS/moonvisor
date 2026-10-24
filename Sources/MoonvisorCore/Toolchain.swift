@@ -63,10 +63,12 @@ public struct Toolchain: Sendable {
         public var prefix: URL?
 
         public var isComplete: Bool { qemu != nil && qemuImg != nil && swtpm != nil && firmware != nil }
-        /// Moonvisor-Engine (Werkzeuge als Frameworks, mit 3D-Bausteinen) statt z. B. Homebrew.
+        /// Moonvisor-Engine (QEMU als Framework, mit 3D-Bausteinen) statt z. B. Homebrew. Ein Ordner Frameworks allein
+        /// reicht nicht: Den legt auch Homebrew an.
         public var isMoonvisorEngine: Bool {
             guard let prefix else { return false }
-            return FileManager.default.fileExists(atPath: prefix.appendingPathComponent("Frameworks").path)
+            return FileManager.default.fileExists(
+                atPath: prefix.appendingPathComponent("Frameworks/qemu-aarch64-softmmu.framework").path)
         }
 
         public var missing: [String] {
@@ -116,7 +118,8 @@ public struct Toolchain: Sendable {
         return Toolchain(qemuSystem: qemu, qemuImg: img, swtpm: newestSwtpm(default: s.swtpm), firmwareCode: fw,
                          firmwareVarsTemplate: vars, dataDirectory: data, enginePrefix: s.isMoonvisorEngine ? s.prefix : nil,
                          tpmHasPPI: deviceHasProperty(qemu, device: "tpm-tis-device", property: "ppi"),
-                         hasVirtioRamfb: s.isMoonvisorEngine || deviceExists(qemu, device: "virtio-ramfb"))
+                         // Nur QEMU selbst weiß es: Auch Homebrew legt einen Ordner Frameworks an.
+                         hasVirtioRamfb: deviceExists(qemu, device: "virtio-ramfb"))
     }
 
     private static let probeLock = NSLock()

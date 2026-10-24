@@ -356,12 +356,15 @@ final class DisplaySession {
     }
 
     /// DirectX-Modus: Bild als IOSurface über SPICE.
-    func connect(spicePath: String, logURL: URL? = nil) {
+    func connect(spicePath: String, logURL: URL? = nil, newLog: Bool = true) {
         disconnect()
         let client = SpiceClient(path: spicePath)
         if let logURL {
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+            if newLog || !FileManager.default.fileExists(atPath: logURL.path) {
+                FileManager.default.createFile(atPath: logURL.path, contents: nil)
+            }
             let handle = try? FileHandle(forWritingTo: logURL)
+            _ = try? handle?.seekToEnd()
             let queue = DispatchQueue(label: "moonvisor.spice.log")
             client.log = { line in
                 queue.async {

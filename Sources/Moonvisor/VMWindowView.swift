@@ -54,7 +54,9 @@ struct VMWindowContent: View {
                 // Bis Firmware oder Windows ein Bild ausgeben, zeigt QEMU nur einen englischen Hinweis
                 // („Guest has not initialized the display“). Den deckt die Startanzeige ab.
                 if showsWaitingOverlay {
-                    overlay {
+                    // Hatte die VM schon ein Bild, ist der Bildschirm meist nur im Ruhezustand: Maus und Tastatur
+                    // gehen weiter an den Gast, damit er aufwacht.
+                    overlay(passThrough: displayAsleep) {
                         ProgressView().controlSize(.large).tint(Moon.accent)
                         Text(waitingText)
                             .font(.system(size: 15, weight: .medium)).foregroundStyle(Moon.text)
@@ -63,7 +65,8 @@ struct VMWindowContent: View {
                                 .font(.system(size: 12)).foregroundStyle(Moon.textMuted)
                                 .multilineTextAlignment(.center)
                                 .frame(maxWidth: 460)
-                            if !entry.directXSetupRunning {
+                            // Einen Neustart nur anbieten, wenn die VM seit dem Start kein Bild hatte: sonst geht ungesicherte Arbeit verloren.
+                            if !entry.directXSetupRunning && !displayAsleep {
                                 Button("Neu starten") { model.restart(entry) }.buttonStyle(MoonPrimaryButtonStyle())
                             }
                         }
@@ -131,19 +134,24 @@ struct VMWindowContent: View {
         "\(entry.display.connected)|\(entry.display.waitingForGuest)|\(entry.state.rawValue)"
     }
 
+    /// Die VM hatte in dieser Sitzung schon ein Bild und zeigt gerade keins.
+    private var displayAsleep: Bool {
+        entry.display.connected && entry.display.hasShownGuest
+    }
+
     private var waitingHelp: String {
         if entry.directXSetupRunning {
             return "Der DirectX-Treiber wird eingerichtet. Windows startet dafür neu und zeigt so lange kein Bild."
         }
         if entry.display.hasShownGuest {
-            return "Windows gibt gerade kein Bild aus, etwa während ein Grafiktreiber wechselt. Kommt das Bild nicht wieder, hilft ein Neustart der VM."
+            return "Der Bildschirm ist im Ruhezustand, oder der Grafiktreiber wechselt gerade. Eine Taste oder Mausbewegung weckt ihn."
         }
         return "Die VM zeigt seit dem Start kein Bild. Meist hilft ein Neustart. Bleibt es dabei, hilft das Protokoll bei der Fehlersuche."
     }
 
     private var waitingText: String {
         if entry.state == .stopping { return "Wird heruntergefahren …" }
-        if entry.display.hasShownGuest { return "Warte auf das Bild von \(entry.config.name) …" }
+        if entry.display.hasShownGuest { return "Der Bildschirm von \(entry.config.name) ist aus" }
         return "\(entry.config.name) startet …"
     }
 
@@ -215,9 +223,9 @@ struct VMWindowContent: View {
         Binding(get: { entry.config.fixedResolution }, set: { model.setResolution(entry, $0) })
     }
 
-    private func overlay<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+    private func overlay<Content: View>(passThrough: Bool = false, @ViewBuilder _ content: () -> Content) -> some View {
         ZStack {
-            Moon.deep.opacity(0.82).ignoresSafeArea()
+            Moon.deep.opacity(0.82).ignoresSafeArea().allowsHitTesting(!passThrough)
             VStack(spacing: 14) { content() }
         }
     }
