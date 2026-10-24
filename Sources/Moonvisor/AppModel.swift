@@ -185,7 +185,6 @@ final class AppModel {
                     // Antwortet QMP gerade nicht, gilt der bisherige Zustand.
                     state = VMRunner.polledState(info) ?? (previous == .stopped ? .starting : previous)
                 }
-                if captureThumbnails, state == .running { try? VMRunner.captureThumbnail(bundle, timeout: 2) }
                 results.append((entry, state, info, previous))
             }
             DispatchQueue.main.async {
@@ -210,7 +209,8 @@ final class AppModel {
                         }
                     }
                     if state == .stopped { entry.shutdownRequested = nil }
-                    entry.state = state
+                    // Nur bei Änderung setzen: Jede Zuweisung baut die Fenster neu auf, alle zwei Sekunden.
+                    if entry.state != state { entry.state = state }
                     if let info {
                         // Im DirectX-Modus kommt das Bild über SPICE (IOSurface), sonst über VNC.
                         // Der SPICE-Client wartet selbst, bis QEMU den Socket angelegt hat.
@@ -249,7 +249,24 @@ final class AppModel {
                         entry.toolsInstallRequested = false
                     }
                     entry.loadThumbnail()
+                    if captureThumbnails && entry.state == .running { self.updateThumbnail(entry) }
                 }
+            }
+        }
+    }
+
+    /// Vorschaubild aus dem Bild, das die App ohnehin anzeigt. Ein QMP-screendump würde QEMU kurz anhalten (im
+    /// DirectX-Modus liest es das Bild aus der Grafikkarte zurück und packt es als PNG); Spiele hatten dadurch alle
+    /// 30 Sekunden einen Hänger.
+    private func updateThumbnail(_ entry: VMEntry) {
+        guard let frame = entry.display.previewFrame else { return }
+        let url = entry.bundle.thumbnailURL
+        poller.async {
+            guard let image = frame.thumbnail(maxWidth: 640), PreviewFrame.writePNG(image, to: url) else { return }
+            let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            DispatchQueue.main.async {
+                entry.thumbnail = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+                entry.thumbnailDate = date
             }
         }
     }
