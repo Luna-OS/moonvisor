@@ -98,7 +98,7 @@ public enum ResourceProfile: String, Codable, CaseIterable, Sendable {
     }
 
     /// Vorschlag abhängig von der Host-Hardware.
-    public func suggestion(hostCPUs: Int, hostMemoryMB: Int) -> (cpus: Int, memoryMB: Int) {
+    public func suggestion(hostCPUs: Int, hostMemoryMB: Int, performanceCores: Int? = nil) -> (cpus: Int, memoryMB: Int) {
         let half = max(2, hostCPUs / 2)
         switch self {
         case .productivity:
@@ -106,7 +106,10 @@ public enum ResourceProfile: String, Codable, CaseIterable, Sendable {
         case .development:
             return (max(2, hostCPUs - 2), clampMemory(8192, host: hostMemoryMB))
         case .gaming:
-            return (max(2, hostCPUs - 2), clampMemory(8192, host: hostMemoryMB))
+            // Spiele laufen am ruhigsten nur auf Leistungskernen: Windows wartet bei jedem Bild auf alle Kerne,
+            // ein Effizienzkern bremst dann das ganze Spiel. Zwei Kerne bleiben für macOS und QEMU frei.
+            let cores = min(performanceCores ?? hostCPUs, hostCPUs - 2)
+            return (max(2, cores), clampMemory(8192, host: hostMemoryMB))
         case .custom:
             return (min(4, half), clampMemory(4096, host: hostMemoryMB))
         }

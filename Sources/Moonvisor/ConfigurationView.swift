@@ -44,6 +44,7 @@ struct ConfigurationView: View {
 
     private var running: Bool { entry.state != .stopped }
     private var hostCPUs: Int { Toolchain.hostCPUCount }
+    private var performanceCores: Int { Toolchain.hostPerformanceCores }
     private var hostMemoryGB: Int { Toolchain.hostMemoryMB / 1024 }
 
     var body: some View {
@@ -152,8 +153,15 @@ struct ConfigurationView: View {
         VStack(alignment: .leading, spacing: 16) {
             section {
                 row("Prozessoren") {
-                    Stepper(value: $draft.cpuCount, in: 1...hostCPUs) {
-                        Text("\(draft.cpuCount) von \(hostCPUs) Kernen").foregroundStyle(Moon.text)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Stepper(value: $draft.cpuCount, in: 1...hostCPUs) {
+                            Text("\(draft.cpuCount) von \(hostCPUs) Kernen").foregroundStyle(Moon.text)
+                        }
+                        if draft.cpuCount > performanceCores && performanceCores < hostCPUs {
+                            Text("Dein Mac hat \(performanceCores) Leistungskerne. Mit mehr Kernen landet die VM auch auf den langsameren Effizienzkernen, Spiele ruckeln dann eher.")
+                                .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 row("Arbeitsspeicher") {
@@ -172,6 +180,11 @@ struct ConfigurationView: View {
                         }
                         .labelsHidden()
                         .fixedSize()
+                        if draft.guestOS == .windows11 && draft.graphics != .directX && EngineStore.supportsDirectX {
+                            Text("Für Spiele „DirectX 11“ wählen: Ohne 3D-Treiber berechnet Windows die Grafik mit dem Prozessor, Spiele laufen dann sehr langsam.")
+                                .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         if draft.guestOS == .windows11 && draft.graphics == .virtio {
                             Text("Benötigt den virtio-GPU-Treiber in Windows (wird bei der Express-Installation eingerichtet).")
                                 .font(.system(size: 11)).foregroundStyle(Moon.textMuted)

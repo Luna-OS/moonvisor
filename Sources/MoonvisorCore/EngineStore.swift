@@ -117,9 +117,16 @@ public enum EngineStore {
         try? fm.removeItem(at: versionFolder)
         try fm.moveItem(at: unpacked, to: versionFolder)
         try Data(manifest.sha256.utf8).write(to: markerURL)
-        removeOtherVersions()
+        removeUnusedVersions()
         progress(.done)
         return versionFolder
+    }
+
+    /// Entfernt ältere Engine-Versionen, sobald keine VM mehr läuft: Nach einem App-Update laufen VMs der alten
+    /// Version weiter und laden aus ihrem Engine-Ordner noch Bausteine nach (etwa den 3D-Render-Server).
+    public static func removeUnusedVersions(in library: URL = VMLibrary.defaultFolder) {
+        guard !VMLibrary.list(in: library).contains(where: { VMRunner.runtime(of: $0) != nil }) else { return }
+        removeOtherVersions()
     }
 
     static func removeOtherVersions() {

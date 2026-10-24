@@ -1,3 +1,4 @@
+import AppKit
 import MoonvisorCore
 import SwiftUI
 
@@ -14,6 +15,11 @@ struct ControlCenterView: View {
                 header
                 if !model.toolchainStatus.isComplete || model.engineProgress != nil || model.engineError != nil {
                     EngineBanner()
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 8)
+                }
+                if model.update != nil {
+                    UpdateBanner()
                         .padding(.horizontal, 16)
                         .padding(.bottom, 8)
                 }
@@ -227,5 +233,91 @@ struct EngineBanner: View {
             return "Einmaliger Download von QEMU, TPM, UEFI-Firmware und den 3D-Bausteinen. Danach läuft alles ohne Internet."
         }
         return "Moonvisor lädt die Engine (QEMU, TPM, UEFI-Firmware, 3D-Bausteine) einmalig herunter."
+    }
+}
+
+/// Neue Moonvisor-Version: Fortschritt beim Laden, danach „Jetzt neu starten“.
+struct UpdateBanner: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if let update = model.update {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                    .foregroundStyle(Moon.accent)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title(update))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Moon.text)
+                    if case .downloading(let value) = model.updatePhase {
+                        ProgressView(value: value).tint(Moon.accent)
+                    }
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Moon.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Link("Was ist neu?", destination: update.pageURL)
+                        .font(.system(size: 11))
+                }
+                Spacer()
+                actions(update)
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Moon.card))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Moon.accent.opacity(0.4)))
+        }
+    }
+
+    @ViewBuilder
+    private func actions(_ update: AppUpdater.Release) -> some View {
+        switch model.updatePhase {
+        case .ready:
+            Button("Jetzt neu starten") { model.installUpdateNow() }
+                .buttonStyle(MoonPrimaryButtonStyle())
+        case .idle, .failed:
+            if AppUpdater.installedApp == nil {
+                Button("Auf GitHub laden") { NSWorkspace.shared.open(update.pageURL) }
+                    .buttonStyle(MoonPrimaryButtonStyle())
+            } else {
+                Button(isFailed ? "Erneut versuchen" : "Laden") { model.downloadUpdate() }
+                    .buttonStyle(MoonPrimaryButtonStyle())
+            }
+        case .checking, .downloading:
+            EmptyView()
+        }
+    }
+
+    private var isFailed: Bool {
+        if case .failed = model.updatePhase { return true }
+        return false
+    }
+
+    private var icon: String {
+        isFailed ? "exclamationmark.triangle" : "arrow.down.circle"
+    }
+
+    private func title(_ update: AppUpdater.Release) -> String {
+        switch model.updatePhase {
+        case .downloading: return "Moonvisor \(update.version) wird geladen …"
+        case .ready: return "Moonvisor \(update.version) ist bereit"
+        case .failed: return "Update auf \(update.version) fehlgeschlagen"
+        case .idle, .checking: return "Moonvisor \(update.version) ist verfügbar"
+        }
+    }
+
+    private var detail: String {
+        switch model.updatePhase {
+        case .ready:
+            return "Wird beim Beenden installiert, oder gleich mit „Jetzt neu starten“. Laufende VMs laufen dabei weiter."
+        case .failed(let message):
+            return message
+        case .downloading:
+            return "Das Update wird geprüft und beim Beenden installiert."
+        case .idle, .checking:
+            return AppUpdater.installedApp == nil
+                ? "Moonvisor läuft nicht aus dem Programme-Ordner und kann sich deshalb nicht selbst aktualisieren."
+                : "Lädt etwa 2 MB und installiert das Update beim Beenden."
+        }
     }
 }

@@ -510,4 +510,50 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(Toolchain.deviceListed("virtio-ramfb", inHelp: "virtio-ramfb options:\n  blob=<bool>"))
         XCTAssertFalse(Toolchain.deviceListed("virtio-ramfb", inHelp: "qemu-system-aarch64: -device virtio-ramfb,help: Device 'virtio-ramfb' not found"))
     }
+
+    func testUpdateVersionComparison() {
+        XCTAssertTrue(AppUpdater.isNewer("0.2.19", than: "0.2.18"))
+        XCTAssertTrue(AppUpdater.isNewer("0.10.0", than: "0.9.9"))
+        XCTAssertTrue(AppUpdater.isNewer("0.2.18.1", than: "0.2.18"))
+        XCTAssertTrue(AppUpdater.isNewer("0.2.18", than: "0.0.0-ci"))
+        XCTAssertFalse(AppUpdater.isNewer("0.2.18", than: "0.2.18"))
+        XCTAssertFalse(AppUpdater.isNewer("0.2.9", than: "0.2.18"))
+    }
+
+    func testUpdateChecksumLookup() {
+        let sums = """
+        661a8a60e2192493c6e1a9759e2ebe816722cf6c03e198b1cfa1c927956da065  Moonvisor-0.2.18-arm64.dmg
+        537E2F1B01992DF36A839CDC0AA921AAA89958A735C2B443EE38757F16A0BFF1 *Moonvisor-0.2.18-arm64.zip
+        """
+        XCTAssertEqual(AppUpdater.checksum(for: "Moonvisor-0.2.18-arm64.zip", in: sums),
+                       "537e2f1b01992df36a839cdc0aa921aaa89958a735c2b443ee38757f16a0bff1")
+        XCTAssertNil(AppUpdater.checksum(for: "Moonvisor-0.2.19-arm64.zip", in: sums))
+    }
+
+    func testUpdateReleaseParsing() throws {
+        func payload(tag: String, prerelease: Bool = false, assets: [String]) -> Data {
+            let list = assets.map { #"{"name": "\#($0)", "browser_download_url": "https://github.com/Luna-OS/moonvisor/releases/download/\#(tag)/\#($0)"}"# }
+            return Data(#"{"tag_name": "\#(tag)", "body": "Neu", "html_url": "https://github.com/Luna-OS/moonvisor/releases/tag/\#(tag)", "draft": false, "prerelease": \#(prerelease), "assets": [\#(list.joined(separator: ","))]}"#.utf8)
+        }
+        let release = try XCTUnwrap(AppUpdater.parseRelease(payload(tag: "v0.2.19", assets: [
+            "Moonvisor-0.2.19-arm64.dmg", "Moonvisor-0.2.19-arm64.zip", "SHA256SUMS.txt",
+        ])))
+        XCTAssertEqual(release.version, "0.2.19")
+        XCTAssertEqual(release.notes, "Neu")
+        XCTAssertEqual(release.archiveURL.lastPathComponent, "Moonvisor-0.2.19-arm64.zip")
+        XCTAssertEqual(release.checksumsURL.lastPathComponent, "SHA256SUMS.txt")
+        // Engine-Releases und unvollständige Releases sind keine App-Updates.
+        XCTAssertNil(try AppUpdater.parseRelease(payload(tag: "engine-4", prerelease: true, assets: ["engine-manifest.json"])))
+        XCTAssertNil(try AppUpdater.parseRelease(payload(tag: "v0.2.19", assets: ["Moonvisor-0.2.19-arm64.dmg"])))
+    }
+
+    func testGamingProfileUsesPerformanceCores() {
+        // M1: 4 Leistungs- und 4 Effizienzkerne.
+        XCTAssertEqual(ResourceProfile.gaming.suggestion(hostCPUs: 8, hostMemoryMB: 16384, performanceCores: 4).cpus, 4)
+        // M3 Pro: 6 + 6.
+        XCTAssertEqual(ResourceProfile.gaming.suggestion(hostCPUs: 12, hostMemoryMB: 18432, performanceCores: 6).cpus, 6)
+        // Nur Leistungskerne: zwei bleiben für macOS frei.
+        XCTAssertEqual(ResourceProfile.gaming.suggestion(hostCPUs: 10, hostMemoryMB: 32768, performanceCores: 10).cpus, 8)
+        XCTAssertEqual(ResourceProfile.development.suggestion(hostCPUs: 8, hostMemoryMB: 16384, performanceCores: 4).cpus, 6)
+    }
 }

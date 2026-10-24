@@ -427,7 +427,8 @@ struct AssistantView: View {
 
     private func applyProfile() {
         guard profile != .custom else { return }
-        let s = profile.suggestion(hostCPUs: hostCPUs, hostMemoryMB: Toolchain.hostMemoryMB)
+        let s = profile.suggestion(hostCPUs: hostCPUs, hostMemoryMB: Toolchain.hostMemoryMB,
+                                   performanceCores: Toolchain.hostPerformanceCores)
         applyingProfile = true
         cpus = s.cpus
         memoryGB = max(2, s.memoryMB / 1024)
