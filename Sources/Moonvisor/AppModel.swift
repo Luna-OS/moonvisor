@@ -94,14 +94,53 @@ final class AppModel {
     @ObservationIgnored private var pasteboardCount = NSPasteboard.general.changeCount
     @ObservationIgnored private var lastClipboardFromGuest: String?
     @ObservationIgnored private var lastFilesFromGuest: [URL] = []
+    /// Hält App Nap fern, solange VMs laufen: Sonst drosselt macOS Bild und Eingaben, sobald das Fenster im
+    /// Hintergrund liegt, und das Bild ruckelt beim Zurückwechseln.
+    @ObservationIgnored private var vmActivity: NSObjectProtocol?
+
+    /// Neuere Moonvisor-Version auf GitHub (nil: aktuell oder noch nicht gesucht).
+    var update: AppUpdater.Release?
+    var updatePhase: UpdatePhase = .idle
+    /// Geladene und geprüfte neue App, bereit zum Austausch.
+    @ObservationIgnored private var stagedUpdate: URL?
+    /// Moonvisor beendet sich für das Update: keine Rückfrage zu laufenden VMs, sie laufen weiter.
+    @ObservationIgnored private(set) var installingUpdate = false
+
+    enum UpdatePhase: Equatable {
+        case idle
+        case checking
+        case downloading(Double)
+        case ready
+        case failed(String)
+    }
+
+    /// Updates automatisch suchen, laden und beim Beenden installieren (Einstellungen).
+    static let autoUpdateKey = "autoUpdate"
+    static var autoUpdate: Bool { UserDefaults.standard.object(forKey: autoUpdateKey) as? Bool ?? true }
 
     init() {
         reload()
         // Moonvisor lädt seine eigene Engine selbst herunter, auch wenn noch eine ältere Homebrew-Installation
         // vorhanden ist: nur die Moonvisor-Engine kann DirectX.
         if EngineStore.installedURL == nil { installEngine() }
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refreshStates() }
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.refreshStates()
+            self?.updateVMActivity()
+        }
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.syncPasteboardToGuests() }
+        // Kurz nach dem Start und danach alle sechs Stunden nach einer neuen Version sehen.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.checkForUpdates(userInitiated: false) }
+        Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.checkForUpdates(userInitiated: false) }
+    }
+
+    private func updateVMActivity() {
+        if runningCount > 0, vmActivity == nil {
+            vmActivity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical],
+                                                               reason: "Virtuelle Maschinen laufen")
+        } else if runningCount == 0, let activity = vmActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            vmActivity = nil
+        }
     }
 
     func entry(_ id: String?) -> VMEntry? {
@@ -376,6 +415,8 @@ final class AppModel {
             if entry.config.graphics == .directX && entry.config.guestOS == .windows11 && DriverStore.cachedDirectXISO == nil {
                 try Self.loadDirectXDrivers(for: entry)
             }
+            // Ältere Engine-Versionen erst wegräumen, wenn keine VM sie mehr benutzt.
+            EngineStore.removeUnusedVersions()
             let toolchain = try Toolchain.locate(requireTPM: entry.config.tpmEnabled)
             do {
                 try VMRunner.start(bundle: bundle, toolchain: toolchain) { [weak self] status in
@@ -609,4 +650,80 @@ final class AppModel {
     }
 
     var runningCount: Int { entries.filter { $0.state != .stopped }.count }
+
+    // MARK: Updates
+
+    /// Sucht auf GitHub nach einer neuen Version und lädt sie (automatisch nur, wenn eingeschaltet).
+    func checkForUpdates(userInitiated: Bool) {
+        guard let current = AppUpdater.currentVersion, userInitiated || Self.autoUpdate else { return }
+        switch updatePhase {
+        case .checking, .downloading, .ready: return
+        case .idle, .failed: break
+        }
+        updatePhase = .checking
+        Task {
+            do {
+                let latest = try await AppUpdater.fetchLatest()
+                await MainActor.run {
+                    self.updatePhase = .idle
+                    guard let latest, AppUpdater.isNewer(latest.version, than: current) else {
+                        self.update = nil
+                        if userInitiated { self.errorMessage = "Moonvisor \(current) ist die neueste Version." }
+                        return
+                    }
+                    self.update = latest
+                    if Self.autoUpdate || userInitiated { self.downloadUpdate() }
+                }
+            } catch {
+                await MainActor.run {
+                    self.updatePhase = .idle
+                    if userInitiated { self.errorMessage = AppUpdater.describe(error) }
+                }
+            }
+        }
+    }
+
+    /// Lädt die neue Version und prüft sie. Danach wird sie beim Beenden oder über „Jetzt neu starten“ installiert.
+    func downloadUpdate() {
+        guard let release = update, AppUpdater.installedApp != nil else { return }
+        switch updatePhase {
+        case .checking, .downloading, .ready: return
+        case .idle, .failed: break
+        }
+        updatePhase = .downloading(0)
+        Task {
+            do {
+                let app = try await AppUpdater.download(release) { value in
+                    DispatchQueue.main.async {
+                        if case .downloading = self.updatePhase { self.updatePhase = .downloading(value) }
+                    }
+                }
+                await MainActor.run {
+                    self.stagedUpdate = app
+                    self.updatePhase = .ready
+                }
+            } catch {
+                await MainActor.run { self.updatePhase = .failed(AppUpdater.describe(error)) }
+            }
+        }
+    }
+
+    /// Beendet Moonvisor, ersetzt die App und öffnet die neue Version. Laufende VMs laufen weiter.
+    func installUpdateNow() {
+        guard updatePhase == .ready, let staged = stagedUpdate, let app = AppUpdater.installedApp else { return }
+        do {
+            try AppUpdater.installWhenTerminated(staged, replacing: app, relaunch: true)
+            installingUpdate = true
+            NSApp.terminate(nil)
+        } catch {
+            updatePhase = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Ein fertig geladenes Update beim normalen Beenden einspielen; beim nächsten Öffnen läuft die neue Version.
+    func installUpdateOnQuit() {
+        guard !installingUpdate, updatePhase == .ready, let staged = stagedUpdate, let app = AppUpdater.installedApp else { return }
+        installingUpdate = true
+        try? AppUpdater.installWhenTerminated(staged, replacing: app, relaunch: false)
+    }
 }

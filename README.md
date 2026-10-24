@@ -45,6 +45,8 @@ Moonvisor ist eine Virtualisierungs-App für macOS nach dem Vorbild von Parallel
    ```
 3. Moonvisor öffnen → **Neue VM erstellen** → *Windows 11 installieren*.
 
+Ab 0.2.19 aktualisiert sich Moonvisor selbst: Es sucht beim Start und alle sechs Stunden auf GitHub nach einer neuen Version, lädt sie, prüft sie gegen `SHA256SUMS.txt` und installiert sie beim Beenden (oder sofort über „Jetzt neu starten“). Laufende VMs laufen dabei weiter. Abschalten lässt sich das in den Einstellungen.
+
 Optional die Kommandozeile verfügbar machen:
 
 ```bash

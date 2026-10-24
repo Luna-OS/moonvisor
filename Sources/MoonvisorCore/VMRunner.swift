@@ -186,6 +186,9 @@ public enum VMRunner {
         qemu.currentDirectoryURL = bundle.url
         qemu.standardOutput = log
         qemu.standardError = log
+        // Die vCPU-Threads erben diese Priorität. Mit niedriger Priorität legt macOS sie gern auf die
+        // Effizienzkerne, und Spiele ruckeln, weil Windows auf den langsamsten Kern wartet.
+        qemu.qualityOfService = .userInteractive
         let swtpmRef = swtpm
         qemu.terminationHandler = { process in
             if let swtpmRef, swtpmRef.isRunning { swtpmRef.terminate() }

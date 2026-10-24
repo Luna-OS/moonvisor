@@ -55,6 +55,9 @@ struct MoonCommands: Commands {
     @FocusedValue(\.focusedVM) private var vm
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Nach Updates suchen …") { model.checkForUpdates(userInitiated: true) }
+        }
         CommandGroup(replacing: .newItem) {
             Button("Neue virtuelle Maschine …") { openWindow(id: "assistant") }
                 .keyboardShortcut("n")
@@ -109,7 +112,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Laufende VMs dürfen weiterlaufen (Moonvisor verbindet sich beim nächsten Start wieder),
     /// oder werden auf Wunsch heruntergefahren.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let model, model.runningCount > 0 else { return .terminateNow }
+        // Für ein Update laufen VMs einfach weiter; die neue Version verbindet sich wieder mit ihnen.
+        guard let model, model.runningCount > 0, !model.installingUpdate else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = model.runningCount == 1 ? "Eine VM läuft noch." : "\(model.runningCount) VMs laufen noch."
         alert.informativeText = "Sie können im Hintergrund weiterlaufen. Moonvisor verbindet sich beim nächsten Öffnen wieder mit ihnen."
@@ -130,6 +134,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateCancel
         }
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model?.installUpdateOnQuit()
+    }
 }
 
 extension View {
@@ -148,9 +156,23 @@ extension View {
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("vmFolder") private var vmFolder = ""
+    @AppStorage(AppModel.autoUpdateKey) private var autoUpdate = true
 
     var body: some View {
         Form {
+            Section("Updates") {
+                LabeledContent("Version", value: AppUpdater.currentVersion ?? "Entwicklungsversion")
+                Toggle("Updates automatisch laden und beim Beenden installieren", isOn: $autoUpdate)
+                    .onChange(of: autoUpdate) { if autoUpdate { model.checkForUpdates(userInitiated: false) } }
+                HStack {
+                    Button("Jetzt nach Updates suchen") { model.checkForUpdates(userInitiated: true) }
+                        .disabled(model.updatePhase == .checking)
+                    if model.updatePhase == .checking { ProgressView().controlSize(.small) }
+                }
+                if let update = model.update {
+                    Text(updateStatus(update)).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
             Section("Virtuelle Maschinen") {
                 LabeledContent("Ordner") {
                     HStack {
@@ -189,7 +211,16 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 420)
+        .frame(width: 560, height: 560)
+    }
+
+    private func updateStatus(_ update: AppUpdater.Release) -> String {
+        switch model.updatePhase {
+        case .downloading(let value): return "Moonvisor \(update.version) wird geladen … \(Int(value * 100)) %"
+        case .ready: return "Moonvisor \(update.version) ist geladen und wird beim Beenden installiert."
+        case .failed(let message): return message
+        case .idle, .checking: return "Moonvisor \(update.version) ist verfügbar."
+        }
     }
 
     private func engineDescription(_ s: Toolchain.Status) -> String {

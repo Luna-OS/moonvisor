@@ -243,5 +243,13 @@ public struct Toolchain: Sendable {
     }
 
     public static var hostCPUCount: Int { ProcessInfo.processInfo.activeProcessorCount }
+
+    /// Leistungskerne (P-Kerne) des Macs; ohne Angabe alle Kerne.
+    public static var hostPerformanceCores: Int {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        guard sysctlbyname("hw.perflevel0.physicalcpu", &value, &size, nil, 0) == 0, value > 0 else { return hostCPUCount }
+        return min(Int(value), hostCPUCount)
+    }
     public static var hostMemoryMB: Int { Int(ProcessInfo.processInfo.physicalMemory / 1_048_576) }
 }
