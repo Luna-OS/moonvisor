@@ -116,7 +116,8 @@ public struct Toolchain: Sendable {
         return Toolchain(qemuSystem: qemu, qemuImg: img, swtpm: newestSwtpm(default: s.swtpm), firmwareCode: fw,
                          firmwareVarsTemplate: vars, dataDirectory: data, enginePrefix: s.isMoonvisorEngine ? s.prefix : nil,
                          tpmHasPPI: deviceHasProperty(qemu, device: "tpm-tis-device", property: "ppi"),
-                         hasVirtioRamfb: s.isMoonvisorEngine || deviceExists(qemu, device: "virtio-ramfb"))
+                         // Nur QEMU selbst weiß es: Auch Homebrew legt einen Ordner Frameworks an.
+                         hasVirtioRamfb: deviceExists(qemu, device: "virtio-ramfb"))
     }
 
     private static let probeLock = NSLock()
