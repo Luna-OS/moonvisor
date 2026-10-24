@@ -73,7 +73,7 @@ jobs:
           sed -i '' 's/^build_vulkan_drivers$/: # build_vulkan_drivers (von Moonvisor übersprungen)/' scripts/build_dependencies.sh
           grep -q 'von Moonvisor übersprungen' scripts/build_dependencies.sh
           # Eigene Patches nach denen von UTM anwenden: engine/qemu-*.patch gehört zu QEMU.
-          cp ../engine/qemu-hvf-no-isv.patch patches/qemu-10.0.12-utm.moonvisor.patch
+          cat ../engine/qemu-*.patch > patches/qemu-10.0.12-utm.moonvisor.patch
           perl -0pi -e 's|(        patch -d "\$DIR" -p1 < "\$PATCH"\n    fi\n)|$1    if [ -f "\$PATCHES_DIR/\$\{NAME\}.moonvisor.patch" ]; then\n        echo "Moonvisor-Patch für \$\{NAME\}"\n        patch -d "\$DIR" -p1 < "\$PATCHES_DIR/\$\{NAME\}.moonvisor.patch"\n    fi\n|' scripts/build_dependencies.sh
           grep -q 'moonvisor.patch' scripts/build_dependencies.sh
           # Der Patch passt nur zu dieser QEMU-Version; bei einem neuen UTM_REF muss er neu erstellt werden.
@@ -107,7 +107,7 @@ jobs:
           # Moonvisor-Patch: Speicherzugriffe ohne Syndrom beenden QEMU nicht mehr.
           grep -rqa 'without syndrome' "$E/Frameworks/qemu-aarch64-softmmu.framework/"
           "$E/bin/qemu-system-aarch64" -device help > devices.txt
-          for device in nvme virtio-net-pci virtio-serial-pci ramfb virtio-gpu-pci virtio-gpu-gl-pci tpm-tis-device intel-hda hda-output usb-tablet; do
+          for device in nvme virtio-net-pci virtio-serial-pci ramfb virtio-ramfb virtio-ramfb-gl virtio-gpu-pci virtio-gpu-gl-pci tpm-tis-device intel-hda hda-output usb-tablet; do
             grep -q "\"$device\"" devices.txt || { echo "Gerät $device fehlt"; exit 1; }
           done
           "$E/bin/qemu-system-aarch64" -audiodev help | grep -q coreaudio
@@ -123,6 +123,8 @@ jobs:
           sleep 10
           test -S vnc.sock && test -S qmp.sock
           kill "$QEMU"
+          # Moonvisor-Patch: Die Firmware zeigt ihr Bild über virtio-ramfb, auch wenn QEMU es ständig neu abholt.
+          python3 engine/smoke-display.py "$E" "$PWD/smoke"
 
       - uses: actions/upload-artifact@v4
         with:

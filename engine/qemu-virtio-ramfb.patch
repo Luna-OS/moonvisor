@@ -1,0 +1,125 @@
+diff --git a/hw/display/ramfb.c b/hw/display/ramfb.c
+index 8c0f907..1f6c556 100644
+--- a/hw/display/ramfb.c
++++ b/hw/display/ramfb.c
+@@ -34,6 +34,8 @@ struct RAMFBState {
+     DisplaySurface *ds;
+     uint32_t width, height;
+     struct RAMFBCfg cfg;
++    /* Moonvisor: counts configurations written by the guest */
++    uint32_t generation;
+ };
+ 
+ static void ramfb_unmap_display_surface(pixman_image_t *image, void *unused)
+@@ -101,6 +103,32 @@ static void ramfb_fw_cfg_write(void *dev, off_t offset, size_t len)
+     s->height = height;
+     qemu_free_displaysurface(s->ds);
+     s->ds = surface;
++    s->generation++;
++}
++
++/*
++ * Moonvisor: generation of the configuration last written by the guest, so
++ * that a wrapping device can tell whether the guest set up ramfb after it
++ * last drove the display itself.
++ */
++uint32_t ramfb_generation(RAMFBState *s)
++{
++    return s->generation;
++}
++
++/*
++ * Moonvisor: build the surface again from the last configuration, e.g. after
++ * the console fell back to a placeholder. Not a new guest configuration.
++ */
++void ramfb_show_again(RAMFBState *s)
++{
++    uint32_t generation = s->generation;
++
++    if (!s->width || !s->height || s->ds) {
++        return;
++    }
++    ramfb_fw_cfg_write(s, 0, 0);
++    s->generation = generation;
+ }
+ 
+ void ramfb_display_update(QemuConsole *con, RAMFBState *s)
+diff --git a/hw/display/virtio-ramfb.c b/hw/display/virtio-ramfb.c
+index c935e3a..986b869 100644
+--- a/hw/display/virtio-ramfb.c
++++ b/hw/display/virtio-ramfb.c
+@@ -45,9 +45,27 @@ static void virtio_ramfb_update_display(void *opaque)
+     VirtIOGPUBase *g = vramfb->vgpu;
+ 
+     if (g->enable) {
++        vramfb->virtio_generation = ramfb_generation(vramfb->ramfb);
+         g->hw_ops->gfx_update(g);
+     } else {
+-        ramfb_display_update(g->scanout[0].con, vramfb->ramfb);
++        QemuConsole *con = g->scanout[0].con;
++        DisplaySurface *surface = qemu_console_surface(con);
++
++        /*
++         * Moonvisor: every virtio-gpu reset replaces the console surface with
++         * the "Display output is not active" placeholder. The firmware resets
++         * the device right after it configured ramfb, so depending on when
++         * the display refresh ran, the guest framebuffer stayed hidden for the
++         * whole boot (and Windows Setup, which draws into it). Show ramfb
++         * again while the guest configured it after virtio-gpu last drove the
++         * display; once a virtio-gpu driver took over, ramfb memory may be
++         * stale and the placeholder stays until the next configuration.
++         */
++        if ((!surface || surface_is_placeholder(surface)) &&
++            ramfb_generation(vramfb->ramfb) != vramfb->virtio_generation) {
++            ramfb_show_again(vramfb->ramfb);
++        }
++        ramfb_display_update(con, vramfb->ramfb);
+     }
+ }
+ 
+@@ -82,11 +100,17 @@ static const GraphicHwOps virtio_ramfb_ops = {
+ 
+ static const VMStateDescription vmstate_virtio_ramfb = {
+     .name = "virtio-ramfb",
+-    .version_id = 2,
++    .version_id = 3,
+     .minimum_version_id = 2,
+     .fields = (VMStateField[]) {
+         /* no pci stuff here, saving the virtio device will handle that */
+-        /* FIXME */
++        /*
++         * Moonvisor: the ramfb configuration, so that a restored snapshot of a
++         * guest without virtio-gpu driver (Windows Setup, Basic Display) shows
++         * its framebuffer again instead of a placeholder.
++         */
++        VMSTATE_STRUCT_POINTER_V(ramfb, VirtIORAMFBBase, 3, ramfb_vmstate,
++                                 RAMFBState),
+         VMSTATE_END_OF_LIST()
+     }
+ };
+diff --git a/hw/display/virtio-ramfb.h b/hw/display/virtio-ramfb.h
+index ac72f73..8a7bd8d 100644
+--- a/hw/display/virtio-ramfb.h
++++ b/hw/display/virtio-ramfb.h
+@@ -17,6 +17,8 @@ struct VirtIORAMFBBase {
+ 
+     VirtIOGPUBase *vgpu;
+     RAMFBState    *ramfb;
++    /* Moonvisor: ramfb generation when virtio-gpu last drove the display */
++    uint32_t       virtio_generation;
+ };
+ 
+ struct VirtIORAMFBBaseClass {
+diff --git a/include/hw/display/ramfb.h b/include/hw/display/ramfb.h
+index a7e0019..336cbcc 100644
+--- a/include/hw/display/ramfb.h
++++ b/include/hw/display/ramfb.h
+@@ -7,6 +7,8 @@
+ typedef struct RAMFBState RAMFBState;
+ void ramfb_display_update(QemuConsole *con, RAMFBState *s);
+ RAMFBState *ramfb_setup(Error **errp);
++uint32_t ramfb_generation(RAMFBState *s);
++void ramfb_show_again(RAMFBState *s);
+ 
+ extern const VMStateDescription ramfb_vmstate;
+ 
