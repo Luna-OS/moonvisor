@@ -93,8 +93,9 @@ final class SpiceClient: @unchecked Sendable, DisplayClient {
 
     private func runMain() {
         var main: SpiceChannel?
-        // Der Socket erscheint erst, wenn QEMU bereit ist.
-        for _ in 0..<100 where !isStopped {
+        // Der Socket erscheint erst, wenn QEMU bereit ist; mit -loadvm erst, nachdem der Arbeitsspeicher geladen
+        // ist (bei großen VMs weit über zehn Sekunden). Deshalb warten, bis die Sitzung beendet wird.
+        while !isStopped {
             if let channel = try? SpiceChannel(path: path, type: .main, connectionID: 0, channelCaps: []) {
                 main = channel
                 break
@@ -102,7 +103,7 @@ final class SpiceClient: @unchecked Sendable, DisplayClient {
             usleep(100_000)
         }
         guard let main, register(main) else {
-            fail(MoonError.qmp("Bildschirm (SPICE) nicht erreichbar"))
+            fail(isStopped ? nil : MoonError.qmp("Bildschirm (SPICE) nicht erreichbar"))
             return
         }
         do {

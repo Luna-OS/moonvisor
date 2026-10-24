@@ -51,7 +51,7 @@ public struct PortForward: Codable, Hashable, Sendable, Identifiable {
 }
 
 public enum GraphicsMode: String, Codable, CaseIterable, Sendable {
-    /// Windows: einfacher Framebuffer (läuft ohne Treiber), Linux: virtio-gpu.
+    /// Windows: virtio-ramfb (Bild ab der Firmware, mit Treiber dynamische Auflösung), Linux: virtio-gpu.
     case automatic
     /// Einfacher Framebuffer (ramfb), feste Auflösung.
     case basic
@@ -169,6 +169,9 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
     public var resumeSnapshot: String?
     /// Feste Gastauflösung; nil = an das Fenster anpassen (benötigt Moonvisor Tools und virtio-GPU).
     public var fixedResolution: GuestResolution?
+    /// Gerätesatz, mit dem die VM lief (`QEMUCommand.currentDeviceRevision`). Steht in der Laufzeit-Konfiguration und
+    /// damit in der Hardware eines Schnappschusses; nil = vor Moonvisor 0.2.17.
+    public var deviceRevision: Int?
 
     public init(
         id: UUID = UUID(),
@@ -194,7 +197,7 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
         case version, id, name, guestOS, notes, createdAt, cpuCount, memoryMB, diskSizeGB, profile
         case networkMode, portForwards, bridgeInterface, macAddress, soundEnabled, tpmEnabled
         case installMediaPath, installMediaAttached, autoConfirmCDBoot, installMode, attachDriversDisc
-        case startOnOpen, commandAsControl, graphics, sharedClipboard, resumeSnapshot, fixedResolution
+        case startOnOpen, commandAsControl, graphics, sharedClipboard, resumeSnapshot, fixedResolution, deviceRevision
     }
 
     /// Fehlende Felder (ältere Konfigurationen) bekommen ihren Standardwert.
@@ -227,6 +230,7 @@ public struct VMConfig: Codable, Hashable, Sendable, Identifiable {
         sharedClipboard = try c.decodeIfPresent(Bool.self, forKey: .sharedClipboard) ?? true
         resumeSnapshot = try c.decodeIfPresent(String.self, forKey: .resumeSnapshot)
         fixedResolution = try c.decodeIfPresent(GuestResolution.self, forKey: .fixedResolution)
+        deviceRevision = try c.decodeIfPresent(Int.self, forKey: .deviceRevision)
     }
 
     /// Lokal administrierte Unicast-MAC im QEMU-Präfix 52:54:00.
@@ -288,6 +292,8 @@ public struct VMBundle: Hashable, Sendable, Identifiable {
     /// Hardware-Konfiguration je Schnappschuss mit Arbeitsspeicher.
     public var snapshotConfigsURL: URL { url.appendingPathComponent("snapshots", isDirectory: true) }
     public var logURL: URL { url.appendingPathComponent("qemu.log") }
+    /// Was Moonvisor beim Start selbst getan hat (z. B. den CD-Start bestätigt).
+    public var startLogURL: URL { url.appendingPathComponent("start.log") }
     /// Diagnosebericht der Moonvisor Tools aus Windows (Grafiktreiber, DirectX-Einrichtung).
     public var windowsReportURL: URL { url.appendingPathComponent("windows-bericht.txt") }
 

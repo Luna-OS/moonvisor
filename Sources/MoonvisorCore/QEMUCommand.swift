@@ -25,12 +25,21 @@ public struct RuntimeSockets: Codable, Hashable, Sendable {
 }
 
 public enum DisplayDevice: String, Sendable {
-    /// Einfacher Framebuffer, funktioniert in Windows ohne Treiber (Setup und Basic Display).
+    /// Einfacher Framebuffer ohne Treiber. Nur mit einer Firmware, die ramfb selbst einrichtet (Homebrew-QEMU);
+    /// die Firmware der Engine kennt ramfb nur als Teil von virtio-ramfb.
     case ramfb
     /// virtio-gpu, für Linux-Gäste mit dynamischer Auflösung.
     case virtioGPU
     /// virtio-gpu mit virglrenderer und Neptune (DirectX 11 über DXMT/Metal).
     case virtioGPUGL
+    /// virtio-gpu mit eingebautem ramfb (Gerät aus UTMs QEMU, dort Standard): Firmware, Windows-Setup und Windows
+    /// ohne Treiber zeigen über ramfb ein Bild, sobald der Treiber läuft, übernimmt virtio-gpu.
+    case virtioRamfb
+    /// virtio-ramfb mit virglrenderer und Neptune (DirectX).
+    case virtioRamfbGL
+
+    /// 3D über virglrenderer: Das Bild kommt dann per SPICE als IOSurface.
+    public var usesGL: Bool { self == .virtioGPUGL || self == .virtioRamfbGL }
 }
 
 /// Baut die QEMU-Argumente für eine VM. Reine Funktion, damit sie testbar ist.
@@ -52,12 +61,31 @@ public struct QEMUCommand: Sendable {
         self.extraDiscs = extraDiscs
     }
 
+    /// Gerätesatz der Grafik: 1 = bis Moonvisor 0.2.16 (ramfb bzw. virtio-gpu-pci), 2 = virtio-ramfb mit der Engine.
+    public static let currentDeviceRevision = 2
+
+    /// Ein Schnappschuss mit Arbeitsspeicher lässt sich nur mit den Geräten laden, mit denen er entstand.
+    /// Ältere Schnappschüsse kennen den Gerätesatz nicht und stammen aus Gerätesatz 1.
+    public var deviceRevision: Int {
+        loadSnapshot == nil ? Self.currentDeviceRevision : (config.deviceRevision ?? 1)
+    }
+
     public var display: DisplayDevice {
+        // Die UEFI-Firmware der Engine (aus UTM) richtet ein einzelnes ramfb nie ein, das Fenster zeigt dann nur
+        // „Guest has not initialized the display“. Sie gibt ihr Bild über virtio-ramfb aus. Windows braucht das auch:
+        // Mit reinem virtio-gpu bleibt das Bild bis zum Treiber leer („Display output is not active“), mit virtio-ramfb
+        // zeigen Firmware, Setup und Windows ohne Treiber ein Bild, mit Treiber übernimmt virtio-gpu.
+        let ramfbViaVirtio = deviceRevision >= 2 && toolchain.hasVirtioRamfb
+        let windows = config.guestOS == .windows11
         switch config.graphics {
-        case .basic: return .ramfb
-        case .virtio: return .virtioGPU
-        case .directX: return toolchain.supportsDirectX ? .virtioGPUGL : .virtioGPU
-        case .automatic: return config.guestOS == .windows11 ? .ramfb : .virtioGPU
+        case .basic: return ramfbViaVirtio ? .virtioRamfb : .ramfb
+        case .virtio: return ramfbViaVirtio && windows ? .virtioRamfb : .virtioGPU
+        case .directX:
+            if toolchain.supportsDirectX { return ramfbViaVirtio && windows ? .virtioRamfbGL : .virtioGPUGL }
+            return ramfbViaVirtio && windows ? .virtioRamfb : .virtioGPU
+        case .automatic:
+            guard windows else { return .virtioGPU }
+            return ramfbViaVirtio ? .virtioRamfb : .ramfb
         }
     }
 
@@ -78,7 +106,7 @@ public struct QEMUCommand: Sendable {
         a += ["-machine", "virt,highmem=on"]
         // DirectX: Triton blendet Texturen in 4-KB-Schritten in den Gast ein; Hypervisor.framework arbeitet
         // sonst mit 16-KB-Seiten, verwirft diese Bereiche und QEMU bricht beim Zugriff ab (wie UTM).
-        a += ["-accel", display == .virtioGPUGL ? "hvf,ipa-granule-size=0x1000" : "hvf", "-cpu", "host"]
+        a += ["-accel", display.usesGL ? "hvf,ipa-granule-size=0x1000" : "hvf", "-cpu", "host"]
         a += ["-smp", "\(max(1, config.cpuCount))"]
         a += ["-m", "\(max(512, config.memoryMB))"]
 
@@ -98,9 +126,11 @@ public struct QEMUCommand: Sendable {
         switch display {
         case .ramfb: a += ["-device", "ramfb"]
         case .virtioGPU: a += ["-device", "virtio-gpu-pci"]
-        case .virtioGPUGL:
+        case .virtioRamfb: a += ["-device", "virtio-ramfb"]
+        case .virtioGPUGL, .virtioRamfbGL:
             // Neptune transportiert Direct3D-Aufrufe des Triton-Treibers zum Mac; blob/hostmem für geteilte Texturen.
-            a += ["-device", "virtio-gpu-gl-pci,hostmem=\(Self.gpuHostMemoryMB)M,blob=true,neptune=true"]
+            let device = display == .virtioRamfbGL ? "virtio-ramfb-gl" : "virtio-gpu-gl-pci"
+            a += ["-device", "\(device),hostmem=\(Self.gpuHostMemoryMB)M,blob=true,neptune=true"]
         }
 
         a += ["-device", "qemu-xhci,id=xhci"]
@@ -159,7 +189,7 @@ public struct QEMUCommand: Sendable {
         }
 
         a += ["-display", "none"]
-        if display == .virtioGPUGL {
+        if display.usesGL {
             // 3D-Bilder liefert QEMU nur über SPICE (IOSurface). VNC lehnt eine GL-Konsole ab und bricht den Start ab.
             // gl=es: OpenGL ES über ANGLE (Metal), wie UTM. Mit gl=on liefert die Engine kein Bild an den Client.
             a += ["-spice", "unix=on,addr=\(e(sockets.spice)),disable-ticketing=on,gl=es,image-compression=off,playback-compression=off,streaming-video=off"]
@@ -173,6 +203,9 @@ public struct QEMUCommand: Sendable {
         return a
     }
 
+    /// Laufwerk des Installationsmediums: Es wird als erste CD angelegt.
+    public static let installMediaDrive = "cd0"
+
     /// Gemeinsamer Grafikspeicher für Neptune (Texturen zwischen Gast und Metal).
     /// Wie UTM: Triton legt Texturen und Puffer in diesem Bereich ab.
     static let gpuHostMemoryMB = 8192
@@ -180,7 +213,7 @@ public struct QEMUCommand: Sendable {
     /// Umgebung für den QEMU-Prozess. Mit DirectX braucht virglrenderer ANGLE (Metal), den Render-Server und DXMT.
     public var environment: [String: String] {
         var env = ProcessInfo.processInfo.environment
-        guard display == .virtioGPUGL, let engine = toolchain.enginePrefix else { return env }
+        guard display.usesGL, let engine = toolchain.enginePrefix else { return env }
         let frameworks = engine.appendingPathComponent("Frameworks")
         let dxmt = frameworks.appendingPathComponent("dxmt-native.framework/Versions/A/dxmt-native").path
         env["ANGLE_DEFAULT_PLATFORM"] = "metal"

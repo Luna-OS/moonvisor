@@ -176,11 +176,12 @@ func run() throws {
             done.signal()
         }
         print("Gestartet (PID \(info.qemuPID)). Bildschirm: Moonvisor-App oder VNC-Socket \(info.sockets.vnc)")
+        // Der automatische Tastendruck für die Windows-ISO läuft in diesem Prozess: bis zu seinem Ende warten.
+        VMRunner.waitForCDBootConfirmation(bundle, timeout: 300)
         if wait {
             done.wait()
         } else {
-            // Kurz warten, damit z. B. der automatische CD-Boot-Tastendruck abgeschlossen wird.
-            Thread.sleep(forTimeInterval: (try bundle.loadConfig()).installMediaAttached ? 17 : 1)
+            Thread.sleep(forTimeInterval: 1)
         }
 
     case "stop":
@@ -196,7 +197,10 @@ func run() throws {
             }
         }
 
-    case "restart": try VMRunner.restart(try vm())
+    case "restart":
+        let bundle = try vm()
+        try VMRunner.restart(bundle)
+        VMRunner.waitForCDBootConfirmation(bundle, timeout: 300)
     case "pause": try VMRunner.pause(try vm())
     case "resume": try VMRunner.resume(try vm())
     case "ctrl-alt-del": try VMRunner.sendCtrlAltDelete(try vm())

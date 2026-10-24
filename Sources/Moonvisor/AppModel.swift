@@ -28,7 +28,12 @@ final class VMEntry: Identifiable {
     let display = DisplaySession()
     @ObservationIgnored var agent: AgentChannel?
     @ObservationIgnored var displaySocket: String?
+    /// QEMU-Prozess, zu dem Bild und Tools-Kanal gehören. Startet die VM mit demselben Socket neu, ist es eine neue Sitzung.
+    @ObservationIgnored var runtimePID: Int32?
     @ObservationIgnored var thumbnailDate: Date?
+    /// Wann „Herunterfahren“ angefordert wurde. Die Firmware und das Windows-Setup reagieren nicht auf den
+    /// ACPI-Ausschalter; dann soll die VM nicht ewig als „Wird heruntergefahren …“ dastehen.
+    @ObservationIgnored var shutdownRequested: Date?
 
     var id: String { bundle.id }
 
@@ -80,7 +85,11 @@ final class AppModel {
 
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private let worker = DispatchQueue(label: "moonvisor.model", qos: .userInitiated)
+    @ObservationIgnored private let poller = DispatchQueue(label: "moonvisor.poller", qos: .utility)
     @ObservationIgnored private var tick = 0
+    /// Eine Abfrage läuft noch: weitere Anstöße warten auf sie, statt sich in der Warteschlange zu stapeln.
+    @ObservationIgnored private var refreshRunning = false
+    @ObservationIgnored private var refreshAgain = false
     @ObservationIgnored private var pasteboardCount = NSPasteboard.general.changeCount
     @ObservationIgnored private var lastClipboardFromGuest: String?
     @ObservationIgnored private var lastFilesFromGuest: [URL] = []
@@ -118,38 +127,68 @@ final class AppModel {
     }
 
     func refreshStates() {
+        guard !refreshRunning else {
+            refreshAgain = true
+            return
+        }
+        refreshRunning = true
         tick += 1
-        let snapshot = entries.map { ($0, $0.bundle) }
+        let snapshot = entries.map { ($0, $0.bundle, $0.state) }
         let captureThumbnails = tick % 15 == 0
-        worker.async {
+        // Eigene Warteschlange: Aktionen wie Ausschalten sollen nicht hinter der Abfrage warten.
+        poller.async {
             var results: [(VMEntry, VMRunState, RuntimeInfo?)] = []
-            for (entry, bundle) in snapshot {
+            for (entry, bundle, previous) in snapshot {
                 let info = VMRunner.runtime(of: bundle)
-                let state = info == nil ? VMRunState.stopped : VMRunner.state(of: bundle)
-                if captureThumbnails, state == .running { try? VMRunner.captureThumbnail(bundle) }
+                var state = VMRunState.stopped
+                if let info {
+                    // Antwortet QMP gerade nicht, gilt der bisherige Zustand.
+                    state = VMRunner.polledState(info) ?? (previous == .stopped ? .starting : previous)
+                }
+                if captureThumbnails, state == .running { try? VMRunner.captureThumbnail(bundle, timeout: 2) }
                 results.append((entry, state, info))
             }
             DispatchQueue.main.async {
+                self.refreshRunning = false
+                if self.refreshAgain {
+                    self.refreshAgain = false
+                    DispatchQueue.main.async { self.refreshStates() }
+                }
                 for (entry, state, info) in results {
+                    // Ein Start läuft noch, die Abfrage kam ihm zuvor: nicht als ausgeschaltet anzeigen.
+                    if entry.state == .starting && state == .stopped && entry.busyMessage != nil { continue }
                     // Übergangszustände nicht durch Zwischenstände überschreiben.
-                    if entry.state == .stopping && state == .running { continue }
+                    if entry.state == .stopping && state == .running {
+                        if let since = entry.shutdownRequested, Date().timeIntervalSince(since) > 30 {
+                            entry.shutdownRequested = nil
+                            self.errorMessage = "„\(entry.config.name)“ reagiert nicht auf „Herunterfahren“, etwa solange noch die Firmware oder die Windows-Installation läuft. Mit „Ausschalten“ endet die VM sofort."
+                        } else {
+                            continue
+                        }
+                    }
+                    if state == .stopped { entry.shutdownRequested = nil }
                     entry.state = state
                     if let info {
                         // Im DirectX-Modus kommt das Bild über SPICE (IOSurface), sonst über VNC.
                         // Der SPICE-Client wartet selbst, bis QEMU den Socket angelegt hat.
                         let spice = info.config?.graphics == .directX
                         let socket = spice ? info.sockets.spice : info.sockets.vnc
-                        if entry.displaySocket != socket {
+                        // Neu verbinden, wenn die Verbindung abgerissen ist, die VM aber noch läuft (z. B. nach
+                        // einem schnellen Neustart über moonctl mit demselben Socket).
+                        let newSession = entry.displaySocket != socket || entry.runtimePID != info.qemuPID
+                        if newSession || entry.display.finished {
                             entry.displaySocket = socket
+                            entry.runtimePID = info.qemuPID
                             if spice {
                                 entry.display.connect(spicePath: socket, logURL: entry.bundle.url.appendingPathComponent("spice.log"))
                             } else {
                                 entry.display.connect(socketPath: socket)
                             }
-                            self.connectAgent(entry, path: info.sockets.agent)
+                            if newSession { self.connectAgent(entry, path: info.sockets.agent) }
                         }
                     } else if entry.displaySocket != nil {
                         entry.displaySocket = nil
+                        entry.runtimePID = nil
                         entry.display.disconnect()
                         entry.agent?.stop()
                         entry.agent = nil
@@ -182,12 +221,6 @@ final class AppModel {
                 if let version = Int(argument), version >= 4, version < GuestTools.version {
                     entry.agent?.sendAgentUpdate()
                 }
-                // Mit installierten Tools ist auch der virtio-GPU-Treiber da: ab dem nächsten Start dynamische Auflösung.
-                if entry.config.guestOS == .windows11 && entry.config.graphics == .automatic {
-                    var config = entry.config
-                    config.graphics = .virtio
-                    self.save(entry, config: config)
-                }
                 if entry.config.usesVirtioGPU { self.applyResolution(entry) }
                 if entry.config.graphics == .directX, (entry.toolsVersion ?? 0) >= 6 { entry.agent?.send("report") }
             case "report":
@@ -203,6 +236,14 @@ final class AppModel {
                 self.pasteboardCount = NSPasteboard.general.changeCount
             case "gpu":
                 entry.gpuDriver = argument
+                // Der virtio-GPU-Treiber läuft: ab jetzt dynamische Auflösung (mit virtio-ramfb ändert das kein Gerät).
+                if ["viogpudo", "viogpu3d"].contains(argument),
+                   entry.config.guestOS == .windows11 && entry.config.graphics == .automatic {
+                    var config = entry.config
+                    config.graphics = .virtio
+                    self.save(entry, config: config)
+                    self.applyResolution(entry)
+                }
                 // DirectX gewählt, Triton aber noch nicht aktiv: einmal pro Sitzung einrichten lassen.
                 if argument != "viogpu3d", !entry.directXSetupTried, entry.directXAutoSetups < 2, entry.canSetUpDirectX {
                     entry.directXAutoSetups += 1
@@ -376,6 +417,9 @@ final class AppModel {
     /// Öffnet `qemu.log` der VM (Konsole bzw. Texteditor), im DirectX-Modus auch `spice.log`.
     func openLog(_ entry: VMEntry) {
         NSWorkspace.shared.open(entry.bundle.logURL)
+        if let start = try? Data(contentsOf: entry.bundle.startLogURL), !start.isEmpty {
+            NSWorkspace.shared.open(entry.bundle.startLogURL)
+        }
         guard entry.config.graphics == .directX else { return }
         let spice = entry.bundle.url.appendingPathComponent("spice.log")
         if FileManager.default.fileExists(atPath: spice.path) { NSWorkspace.shared.open(spice) }
@@ -387,25 +431,29 @@ final class AppModel {
     }
 
     func shutdown(_ entry: VMEntry) {
-        captureThumbnail(entry)
         entry.state = .stopping
-        perform(entry, nil) { try VMRunner.shutdown($0) }
+        entry.shutdownRequested = Date()
+        perform(entry, nil) { bundle in
+            try? VMRunner.captureThumbnail(bundle, timeout: 2)
+            try VMRunner.shutdown(bundle)
+        }
     }
 
     func powerOff(_ entry: VMEntry) {
-        captureThumbnail(entry)
         entry.state = .stopping
-        perform(entry, "Wird ausgeschaltet …") { try VMRunner.powerOff($0) }
+        perform(entry, "Wird ausgeschaltet …") { bundle in
+            try? VMRunner.captureThumbnail(bundle, timeout: 2)
+            try VMRunner.powerOff(bundle)
+        }
     }
 
-    func restart(_ entry: VMEntry) { perform(entry, nil) { try VMRunner.restart($0) } }
+    func restart(_ entry: VMEntry) {
+        entry.shutdownRequested = nil
+        perform(entry, nil) { try VMRunner.restart($0) }
+    }
     func pause(_ entry: VMEntry) { perform(entry, nil) { try VMRunner.pause($0) } }
     func resume(_ entry: VMEntry) { perform(entry, nil) { try VMRunner.resume($0) } }
     func ctrlAltDelete(_ entry: VMEntry) { perform(entry, nil) { try VMRunner.sendCtrlAltDelete($0) } }
-
-    func captureThumbnail(_ entry: VMEntry) {
-        try? VMRunner.captureThumbnail(entry.bundle)
-    }
 
     func takeSnapshot(_ entry: VMEntry, name: String) {
         perform(entry, "Schnappschuss wird erstellt …") { bundle in

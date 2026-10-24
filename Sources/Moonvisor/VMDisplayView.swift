@@ -304,14 +304,24 @@ struct VMDisplayView: NSViewRepresentable {
 @Observable
 final class DisplaySession {
     private(set) var connected = false
+    /// QEMU zeigt nur sein Ersatzbild („Guest has not initialized the display“): Moonvisor deckt es mit der
+    /// Startanzeige ab, bis Firmware oder Windows ein Bild ausgeben.
+    private(set) var waitingForGuest = false
+    /// In dieser Sitzung kam schon ein echtes Bild (danach heißt das Ersatzbild nicht mehr „startet“).
+    private(set) var hasShownGuest = false
     private(set) var resolution: CGSize = .zero
     var lastError: String?
+    /// Die Verbindung zum Bildschirm ist beendet, obwohl niemand `disconnect()` aufgerufen hat. Läuft die VM noch,
+    /// verbindet das AppModel neu.
+    @ObservationIgnored private(set) var finished = false
     @ObservationIgnored weak var view: VMDisplayNSView?
     @ObservationIgnored var agent: AgentChannel?
     @ObservationIgnored private var client: DisplayClient?
     @ObservationIgnored private var lastImage: CGImage?
     @ObservationIgnored private var lastSurface: IOSurfaceRef?
     @ObservationIgnored private var guestCursor: NSCursor?
+    /// Nach einem neuen Scanout erst beim nächsten Zeichnen prüfen: QEMU füllt die IOSurface erst danach.
+    @ObservationIgnored private var checkSurface = false
 
     func attach(_ view: VMDisplayNSView) {
         self.view = view
@@ -328,15 +338,17 @@ final class DisplaySession {
         disconnect()
         let client = VNCClient(path: socketPath)
         client.onFrame = { [weak self, weak client] image in
-            guard let self else { return }
-            self.connected = true
+            // Meldungen eines abgelösten Clients ignorieren.
+            guard let self, let client, self.client === client else { return }
+            self.receivedFrame()
+            self.setWaiting(client.lastFrameIsPlaceholder)
             self.lastImage = image
-            if let client { self.updateResolution(width: client.width, height: client.height) }
+            self.updateResolution(width: client.width, height: client.height)
             self.view?.show(image)
         }
-        client.onDisconnect = { [weak self] error in
-            self?.connected = false
-            if let error { self?.lastError = error.localizedDescription }
+        client.onDisconnect = { [weak self, weak client] error in
+            guard let self, let client, self.client === client else { return }
+            self.lost(error)
         }
         self.client = client
         view?.client = client
@@ -359,26 +371,53 @@ final class DisplaySession {
             }
         }
         client.onScanout = { [weak self, weak client] surface in
-            guard let self else { return }
-            self.connected = true
+            guard let self, let client, self.client === client else { return }
+            self.receivedFrame()
             self.lastSurface = surface
-            if let client { self.updateResolution(width: client.width, height: client.height) }
+            self.checkSurface = true
+            self.updateResolution(width: client.width, height: client.height)
+            // Zeigt die Fläche schon das Ersatzbild, gleich abdecken; aufgedeckt wird erst beim Zeichnen.
+            if DisplayPlaceholder.matches(surface: surface, width: client.width, height: client.height) { self.setWaiting(true) }
             self.view?.show(surface: surface)
         }
-        client.onDraw = { [weak self] in
-            self?.view?.refreshSurface()
+        client.onDraw = { [weak self, weak client] in
+            guard let self, let client, self.client === client else { return }
+            // Nur nach einem Scanout und solange das Ersatzbild zu sehen ist prüfen: Mit DirectX kommen sonst bis zu
+            // 60 Bilder pro Sekunde.
+            if self.checkSurface || self.waitingForGuest, let surface = self.lastSurface {
+                self.checkSurface = false
+                self.setWaiting(DisplayPlaceholder.matches(surface: surface, width: client.width, height: client.height))
+            }
+            self.view?.refreshSurface()
         }
         client.onCursor = { [weak self] cursor in
             self?.guestCursor = cursor
             self?.view?.guestCursor = cursor
         }
-        client.onDisconnect = { [weak self] error in
-            self?.connected = false
-            if let error { self?.lastError = error.localizedDescription }
+        client.onDisconnect = { [weak self, weak client] error in
+            guard let self, let client, self.client === client else { return }
+            self.lost(error)
         }
         self.client = client
         view?.client = client
         client.start()
+    }
+
+    private func receivedFrame() {
+        if !connected { connected = true }
+        if lastError != nil { lastError = nil }
+    }
+
+    private func lost(_ error: Error?) {
+        connected = false
+        finished = true
+        if let error { lastError = error.localizedDescription }
+    }
+
+    /// Nur bei Änderung setzen: Jede Zuweisung würde die Fensteransicht neu aufbauen, und Bilder kommen laufend.
+    private func setWaiting(_ waiting: Bool) {
+        if waitingForGuest != waiting { waitingForGuest = waiting }
+        if !waiting && !hasShownGuest { hasShownGuest = true }
     }
 
     private func updateResolution(width: Int, height: Int) {
@@ -396,6 +435,10 @@ final class DisplaySession {
         guestCursor = nil
         view?.guestCursor = nil
         connected = false
+        finished = false
+        checkSurface = false
+        waitingForGuest = false
+        hasShownGuest = false
     }
 
     var snapshotImage: CGImage? { lastImage }
@@ -403,5 +446,16 @@ final class DisplaySession {
     /// Nach dem Verbinden der Tools die aktuelle Fenstergröße anfragen.
     func requestCurrentSize() {
         view?.scheduleGuestResize()
+    }
+}
+
+extension DisplayPlaceholder {
+    /// Prüft die IOSurface aus dem DirectX-Modus (SPICE mit OpenGL).
+    static func matches(surface: IOSurfaceRef, width: Int, height: Int) -> Bool {
+        guard IOSurfaceGetBytesPerElement(surface) == 4,
+              IOSurfaceLock(surface, .readOnly, nil) == KERN_SUCCESS else { return false }
+        defer { IOSurfaceUnlock(surface, .readOnly, nil) }
+        let w = min(width, IOSurfaceGetWidth(surface)), h = min(height, IOSurfaceGetHeight(surface))
+        return matches(IOSurfaceGetBaseAddress(surface), width: w, height: h, bytesPerRow: IOSurfaceGetBytesPerRow(surface))
     }
 }
