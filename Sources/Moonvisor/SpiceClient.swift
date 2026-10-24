@@ -20,7 +20,7 @@ extension VNCClient: DisplayClient {}
 ///
 /// Mit `gl=es` rendert QEMU jedes Bild (2D wie 3D) in eine IOSurface und meldet sie per
 /// `GL_SCANOUT_UNIX`: über den Socket kommt das Leseende einer Pipe, in der die IOSurface-ID steht.
-/// Jede neue Bildfolge kündigt `GL_DRAW` an; der Client zeigt sie und bestätigt mit `GL_DRAW_DONE`.
+/// Jede neue Bildfolge kündigt `GL_DRAW` an; der Client bestätigt sofort mit `GL_DRAW_DONE` und zeigt sie.
 /// Umgesetzt sind nur die Kanäle, die Moonvisor braucht: Haupt-, Bild-, Eingabe- und Mauszeigerkanal.
 final class SpiceClient: @unchecked Sendable, DisplayClient {
     /// Neue Bildfläche (Main-Thread).
@@ -43,6 +43,8 @@ final class SpiceClient: @unchecked Sendable, DisplayClient {
     private var inputs: SpiceChannel?
     private var lastButtons: UInt8 = 0
     private var unackedMotion = 0
+    /// Ein `onDraw` wartet schon auf den Hauptthread.
+    private var drawQueued = false
     private var cursorCache: [UInt64: NSCursor] = [:]
 
     init(path: String) {
@@ -204,10 +206,20 @@ final class SpiceClient: @unchecked Sendable, DisplayClient {
                     self.onScanout?(surface)
                 }
             case SpiceMsg.displayGLDraw:
-                // Erst nach dem Anzeigen bestätigen: danach darf QEMU die Fläche überschreiben.
-                DispatchQueue.main.async {
-                    self.onDraw?()
-                    channel.send(SpiceMsg.displayGLDrawDone)
+                // Sofort bestätigen: Bis GL_DRAW_DONE kommt, hält QEMU die Grafik der VM an. Wartete die Bestätigung
+                // auf den Hauptthread, würde jede kurze Pause der App (Fenster aufbauen, Vorschaubild) zum Hänger
+                // im Spiel. Core Animation liest die IOSurface ohnehin erst beim Zusammensetzen (wie UTM).
+                channel.send(SpiceMsg.displayGLDrawDone)
+                lock.lock()
+                let queued = drawQueued
+                drawQueued = true
+                lock.unlock()
+                // Bilder, die schneller kommen, als der Hauptthread sie zeigt, zusammenfassen.
+                if !queued {
+                    DispatchQueue.main.async {
+                        self.lock.lock(); self.drawQueued = false; self.lock.unlock()
+                        self.onDraw?()
+                    }
                 }
             default:
                 break

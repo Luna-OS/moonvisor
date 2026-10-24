@@ -1,6 +1,7 @@
 import MoonvisorCore
 import AppKit
 import Carbon.HIToolbox
+import ImageIO
 import IOSurface
 import SwiftUI
 
@@ -446,6 +447,14 @@ final class DisplaySession {
 
     var snapshotImage: CGImage? { lastImage }
 
+    /// Aktuelles Bild für die Vorschau in der Übersicht; nil, solange der Gast nichts ausgibt.
+    var previewFrame: PreviewFrame? {
+        guard connected, !waitingForGuest else { return nil }
+        if let lastSurface { return .surface(lastSurface) }
+        if let lastImage { return .image(lastImage) }
+        return nil
+    }
+
     /// Nach dem Verbinden der Tools die aktuelle Fenstergröße anfragen.
     func requestCurrentSize() {
         view?.scheduleGuestResize()
@@ -460,5 +469,63 @@ extension DisplayPlaceholder {
         defer { IOSurfaceUnlock(surface, .readOnly, nil) }
         let w = min(width, IOSurfaceGetWidth(surface)), h = min(height, IOSurfaceGetHeight(surface))
         return matches(IOSurfaceGetBaseAddress(surface), width: w, height: h, bytesPerRow: IOSurfaceGetBytesPerRow(surface))
+    }
+}
+
+/// Bild des Gasts für die Vorschau: VNC liefert ein CGImage, der DirectX-Modus eine IOSurface.
+enum PreviewFrame: @unchecked Sendable {
+    case image(CGImage)
+    case surface(IOSurfaceRef)
+
+    /// Verkleinerte Kopie (Vorschaubilder sind klein; das spart Zeit beim Speichern und Laden).
+    func thumbnail(maxWidth: Int) -> CGImage? {
+        switch self {
+        case .image(let image):
+            return Self.scaled(image, maxWidth: maxWidth)
+        case .surface(let surface):
+            let bgra: OSType = 0x4247_5241, rgba: OSType = 0x5247_4241
+            let format = IOSurfaceGetPixelFormat(surface)
+            // Nicht auf die Grafikkarte warten: Für die Vorschau reicht das Bild, das gerade im Speicher liegt.
+            guard IOSurfaceGetBytesPerElement(surface) == 4, format == bgra || format == rgba,
+                  IOSurfaceLock(surface, [.readOnly, .avoidSync], nil) == KERN_SUCCESS else { return nil }
+            defer { IOSurfaceUnlock(surface, [.readOnly, .avoidSync], nil) }
+            let w = IOSurfaceGetWidth(surface), h = IOSurfaceGetHeight(surface), stride = IOSurfaceGetBytesPerRow(surface)
+            let info = format == bgra
+                ? CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue
+                : CGImageAlphaInfo.noneSkipLast.rawValue
+            // Die Bildpunkte gehören der IOSurface; `scaled` kopiert sie, solange sie gesperrt ist.
+            guard w > 0, h > 0,
+                  let provider = CGDataProvider(dataInfo: nil, data: IOSurfaceGetBaseAddress(surface), size: stride * h,
+                                                releaseData: { _, _, _ in }),
+                  let image = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: stride,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: info),
+                                      provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+            else { return nil }
+            return Self.scaled(image, maxWidth: maxWidth)
+        }
+    }
+
+    private static func scaled(_ image: CGImage, maxWidth: Int) -> CGImage? {
+        let scale = min(1, Double(maxWidth) / Double(image.width))
+        let w = max(1, Int(Double(image.width) * scale)), h = max(1, Int(Double(image.height) * scale))
+        guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue)
+        else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return context.makeImage()
+    }
+
+    /// Schreibt das Bild als PNG und ersetzt die alte Datei in einem Schritt.
+    static func writePNG(_ image: CGImage, to url: URL) -> Bool {
+        let temp = url.deletingLastPathComponent().appendingPathComponent(".thumbnail-\(UUID().uuidString).png")
+        guard let destination = CGImageDestinationCreateWithURL(temp as CFURL, "public.png" as CFString, 1, nil) else { return false }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination), rename(temp.path, url.path) == 0 else {
+            try? FileManager.default.removeItem(at: temp)
+            return false
+        }
+        return true
     }
 }
