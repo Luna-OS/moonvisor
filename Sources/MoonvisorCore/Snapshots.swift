@@ -63,8 +63,8 @@ public enum Snapshots {
         }
     }
 
-    static func hmp(_ bundle: VMBundle, _ command: String) throws {
-        try VMRunner.withQMP(bundle) { qmp in
+    static func hmp(_ bundle: VMBundle, _ command: String, timeout: Double = 10) throws {
+        try VMRunner.withQMP(bundle, timeout: timeout) { qmp in
             let output = try qmp.execute("human-monitor-command", ["command-line": command]) as? String ?? ""
             if output.lowercased().contains("error") { throw MoonError.qmp(output.trimmingCharacters(in: .whitespacesAndNewlines)) }
         }
@@ -107,6 +107,7 @@ public enum Snapshots {
         config.cpuCount = snapshot.cpuCount
         config.memoryMB = snapshot.memoryMB
         config.graphics = snapshot.graphics
+        config.deviceRevision = snapshot.deviceRevision
         config.soundEnabled = snapshot.soundEnabled
         config.tpmEnabled = snapshot.tpmEnabled
         config.macAddress = snapshot.macAddress
@@ -123,8 +124,16 @@ public enum Snapshots {
     public static func create(_ bundle: VMBundle, name: String, toolchain: Toolchain) throws {
         let tag = sanitize(name)
         if VMRunner.runtime(of: bundle) != nil {
-            try hmp(bundle, "savevm \(tag)")
+            // Die Hardware vorher sichern: savevm antwortet erst, wenn der ganze Arbeitsspeicher geschrieben ist.
+            let url = hardwareURL(bundle, tag)
+            let previous = try? Data(contentsOf: url)
             try? saveHardware(bundle, tag: tag)
+            do {
+                try hmp(bundle, "savevm \(tag)", timeout: 900)
+            } catch {
+                if let previous { try? previous.write(to: url, options: .atomic) } else { try? FileManager.default.removeItem(at: url) }
+                throw error
+            }
             return
         }
         for image in images(bundle) { try run(toolchain, ["snapshot", "-c", tag, image.path]) }
@@ -158,7 +167,7 @@ public enum Snapshots {
     public static func delete(_ bundle: VMBundle, name: String, toolchain: Toolchain) throws {
         defer { try? FileManager.default.removeItem(at: hardwareURL(bundle, name)) }
         if VMRunner.runtime(of: bundle) != nil {
-            try hmp(bundle, "delvm \(name)")
+            try hmp(bundle, "delvm \(name)", timeout: 120)
             return
         }
         for image in images(bundle) where try info(image, toolchain: toolchain).contains(where: { $0["name"] as? String == name }) {

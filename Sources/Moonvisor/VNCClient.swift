@@ -30,6 +30,12 @@ final class VNCClient: @unchecked Sendable {
     private(set) var supportsDesktopResize = false
     private let frameLock = NSLock()
     private var framePending = false
+    /// Während ein Bild noch auf den Hauptthread wartet, kam ein neueres: danach noch einmal melden.
+    private var frameDirty = false
+    /// Seit der letzten Größenänderung kamen Bildpunkte. Vorher ist der Puffer nur schwarz.
+    private var hasPixels = false
+    /// Das zuletzt gemeldete Bild ist QEMUs Ersatzbild (der Gast gibt noch kein Bild aus).
+    private(set) var lastFrameIsPlaceholder = false
 
     init(path: String) {
         self.path = path
@@ -55,8 +61,9 @@ final class VNCClient: @unchecked Sendable {
 
     private func run() {
         var lastError: Error?
-        // Der Socket erscheint erst, wenn QEMU bereit ist.
-        for _ in 0..<100 where !stopped {
+        // Der Socket erscheint erst, wenn QEMU bereit ist; mit -loadvm erst, nachdem der Arbeitsspeicher geladen
+        // ist (bei großen VMs weit über zehn Sekunden). Deshalb warten, bis die Sitzung beendet wird.
+        while !stopped {
             if let s = try? UnixSocket(path: path) {
                 socket = s
                 break
@@ -64,7 +71,7 @@ final class VNCClient: @unchecked Sendable {
             usleep(100_000)
         }
         guard let socket, !stopped else {
-            DispatchQueue.main.async { self.onDisconnect?(MoonError.qmp("Bildschirm nicht erreichbar")) }
+            socket?.shutdown()
             return
         }
         do {
@@ -122,8 +129,8 @@ final class VNCClient: @unchecked Sendable {
             let type = try s.read(exactly: 1)[0]
             switch type {
             case 0:
-                try readFramebufferUpdate(s)
-                publishFrame()
+                // Aktualisierungen nur mit Pseudo-Rechtecken (Größenänderung, Tastenbestätigung) enthalten kein Bild.
+                if try readFramebufferUpdate(s) { publishFrame() }
                 requestUpdate(incremental: true)
             case 1:
                 let header = try s.read(exactly: 5)
@@ -139,9 +146,11 @@ final class VNCClient: @unchecked Sendable {
         }
     }
 
-    private func readFramebufferUpdate(_ s: UnixSocket) throws {
+    /// Gibt zurück, ob die Aktualisierung Bildpunkte enthielt.
+    private func readFramebufferUpdate(_ s: UnixSocket) throws -> Bool {
         let header = try s.read(exactly: 3)
         let rects = Int(be16(header, 1))
+        var pixels = false
         for _ in 0..<rects {
             let r = try s.read(exactly: 12)
             let x = Int(be16(r, 0)), y = Int(be16(r, 2)), w = Int(be16(r, 4)), h = Int(be16(r, 6))
@@ -149,9 +158,11 @@ final class VNCClient: @unchecked Sendable {
             switch encoding {
             case Encoding.raw.rawValue:
                 try readRaw(s, x: x, y: y, w: w, h: h)
+                pixels = true
             case Encoding.copyRect.rawValue:
                 let src = try s.read(exactly: 4)
                 copyRect(fromX: Int(be16(src, 0)), fromY: Int(be16(src, 2)), x: x, y: y, w: w, h: h)
+                pixels = true
             case Encoding.desktopSize.rawValue:
                 resize(width: w, height: h)
             case Encoding.qemuExtendedKey.rawValue:
@@ -166,6 +177,12 @@ final class VNCClient: @unchecked Sendable {
                 throw MoonError.qmp("Nicht unterstützte VNC-Kodierung \(encoding)")
             }
         }
+        if pixels {
+            frameLock.lock()
+            hasPixels = true
+            frameLock.unlock()
+        }
+        return pixels
     }
 
     private func readRaw(_ s: UnixSocket, x: Int, y: Int, w: Int, h: Int) throws {
@@ -206,21 +223,24 @@ final class VNCClient: @unchecked Sendable {
         height = h
         framebuffer = UnsafeMutableRawPointer.allocate(byteCount: max(1, w * h * 4), alignment: 16)
         memset(framebuffer!, 0, max(1, w * h * 4))
+        hasPixels = false
     }
 
     /// Erstellt ein Bild vom aktuellen Framebuffer. Nicht abgeholte Bilder werden zusammengefasst.
     private func publishFrame() {
         frameLock.lock()
         if framePending {
+            frameDirty = true
             frameLock.unlock()
             return
         }
-        guard let fb = framebuffer, width > 0, height > 0 else {
+        guard let fb = framebuffer, width > 0, height > 0, hasPixels else {
             frameLock.unlock()
             return
         }
         let data = Data(bytes: fb, count: width * height * 4)
         let w = width, h = height
+        let placeholder = DisplayPlaceholder.matches(fb, width: w, height: h, bytesPerRow: w * 4)
         framePending = true
         frameLock.unlock()
 
@@ -239,8 +259,13 @@ final class VNCClient: @unchecked Sendable {
         DispatchQueue.main.async {
             self.frameLock.lock()
             self.framePending = false
+            let newer = self.frameDirty
+            self.frameDirty = false
             self.frameLock.unlock()
+            self.lastFrameIsPlaceholder = placeholder
             self.onFrame?(image)
+            // Das neueste Bild nicht verlieren: QEMU schickt erst wieder etwas, wenn sich der Inhalt ändert.
+            if newer { DispatchQueue.global(qos: .userInteractive).async { self.publishFrame() } }
         }
     }
 

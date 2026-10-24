@@ -55,10 +55,23 @@ public enum VMRunner {
         guard let info = runtime(of: bundle) else { return .stopped }
         guard let qmp = try? QMPClient(path: info.sockets.qmp) else { return .starting }
         defer { qmp.close() }
-        switch (try? qmp.status()) ?? "running" {
+        return runState(forStatus: (try? qmp.status()) ?? "running")
+    }
+
+    /// Zustand einer laufenden VM für die regelmäßige Abfrage der App. nil: QMP antwortete nicht schnell genug
+    /// (QEMU bedient gerade einen anderen Client oder lädt einen Schnappschuss); dann gilt der bisherige Zustand.
+    public static func polledState(_ info: RuntimeInfo) -> VMRunState? {
+        guard let qmp = try? QMPClient(path: info.sockets.qmp, timeout: 2) else { return nil }
+        defer { qmp.close() }
+        guard let status = try? qmp.status() else { return nil }
+        return runState(forStatus: status)
+    }
+
+    static func runState(forStatus status: String) -> VMRunState {
+        switch status {
         case "paused", "suspended": return .paused
         case "shutdown": return .stopping
-        case "inmigrate", "prelaunch": return .starting
+        case "inmigrate", "prelaunch", "restore-vm": return .starting
         default: return .running
         }
     }
@@ -146,6 +159,8 @@ public enum VMRunner {
             config.autoConfirmCDBoot = false
             try? bundle.saveConfig(config)
         }
+        // Mit diesen Geräten läuft die VM; Schnappschüsse aus dieser Sitzung merken sie sich (Laufzeit-Konfiguration).
+        config.deviceRevision = command.deviceRevision
 
         var swtpm: Process?
         if config.tpmEnabled {
@@ -192,37 +207,116 @@ public enum VMRunner {
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(info).write(to: bundle.runtimeURL, options: .atomic)
 
+        StartLog.begin(bundle)
         if confirmCDBoot {
-            confirmCDBootPrompt(sockets: sockets)
+            confirmCDBootPrompt(bundle: bundle, sockets: sockets)
         }
         return info
     }
 
-    /// Der Windows-Bootloader auf der CD wartet einige Sekunden auf einen Tastendruck.
-    /// Wie Parallels drücken wir in den ersten Sekunden wiederholt eine Taste.
-    static func confirmCDBootPrompt(sockets: RuntimeSockets) {
+    /// Der Windows-Bootloader auf der CD fragt „Press any key to boot from CD or DVD“ und wartet nur etwa fünf
+    /// Sekunden; ohne Taste landet die Firmware in der UEFI-Shell. Moonvisor drückt deshalb Enter, bis die VM
+    /// das Installationsmedium in großen Mengen liest (Windows lädt dann boot.wim). Kommt es nicht so weit,
+    /// startet Moonvisor die VM neu und versucht es noch einmal.
+    /// Jeder Schritt nutzt eine eigene kurze QMP-Verbindung: QEMU bedient nur einen QMP-Client gleichzeitig, eine
+    /// dauerhaft offene Verbindung ließe die Statusabfragen der App ins Leere laufen.
+    static func confirmCDBootPrompt(bundle: VMBundle, sockets: RuntimeSockets) {
+        // Läuft für diese VM schon eine Bestätigung (z. B. Neustart kurz nach dem Start), fängt sie von vorn an.
+        confirmLock.lock()
+        let alreadyRunning = confirmRuns[sockets.qmp] != nil
+        confirmRuns[sockets.qmp, default: 0] += 1
+        let firstGeneration = confirmRuns[sockets.qmp] ?? 0
+        confirmLock.unlock()
+        if alreadyRunning { return }
+
         Thread.detachNewThread {
-            guard let qmp = try? QMPClient(path: sockets.qmp) else { return }
-            defer { qmp.close() }
-            let start = Date()
-            // Die Firmware versucht zuerst die leere NVMe-Platte; die Abfrage von Windows kommt erst danach.
-            while Date().timeIntervalSince(start) < 25 {
-                try? qmp.sendKeys(["ret"], holdMillis: 60)
-                usleep(400_000)
+            var generation = firstGeneration
+            var started = Date()
+            var confirmation = CDBootConfirmation()
+            var failures = 0
+            /// Beendet die Schleife, außer es kam inzwischen ein neuer Auftrag.
+            func finish() -> Bool {
+                VMRunner.confirmLock.lock()
+                defer { VMRunner.confirmLock.unlock() }
+                guard VMRunner.confirmRuns[sockets.qmp] == generation else { return false }
+                VMRunner.confirmRuns[sockets.qmp] = nil
+                return true
+            }
+            while true {
+                usleep(500_000)
+                guard FileManager.default.fileExists(atPath: sockets.qmp) else {
+                    // Die VM läuft nicht mehr.
+                    VMRunner.confirmLock.lock()
+                    VMRunner.confirmRuns[sockets.qmp] = nil
+                    VMRunner.confirmLock.unlock()
+                    return
+                }
+                VMRunner.confirmLock.lock()
+                let current = VMRunner.confirmRuns[sockets.qmp] ?? generation
+                VMRunner.confirmLock.unlock()
+                if current != generation {
+                    generation = current
+                    confirmation = CDBootConfirmation()
+                    started = Date()
+                }
+                do {
+                    let qmp = try QMPClient(path: sockets.qmp, timeout: 3)
+                    defer { qmp.close() }
+                    failures = 0
+                    let running = try qmp.status() == "running"
+                    let read = CDBootConfirmation.readBytes(
+                        fromBlockStats: try qmp.execute("query-blockstats"), drive: QEMUCommand.installMediaDrive)
+                    let step = confirmation.next(read: read, running: running, elapsed: 0.5)
+                    let seconds = Int(Date().timeIntervalSince(started))
+                    switch step {
+                    case .wait: continue
+                    case .press: try qmp.sendKeys(["ret"], holdMillis: 60)
+                    case .reset:
+                        StartLog.write(bundle, "Keine Reaktion der Windows-ISO nach \(seconds) s, VM wird neu gestartet.")
+                        try qmp.execute("system_reset")
+                    case .done:
+                        StartLog.write(bundle, "Windows-Setup lädt von der ISO (nach \(seconds) s, \(confirmation.presses)× Enter).")
+                        if finish() { return }
+                    case .giveUp:
+                        StartLog.write(bundle, "Die Windows-ISO startet nicht (\(confirmation.resets) Neustarts).")
+                        if finish() { return }
+                    }
+                } catch {
+                    // Kurz darauf erneut versuchen; verschwindet der Socket, endet die Schleife oben.
+                    failures += 1
+                    if failures >= 20, finish() { return }
+                }
             }
         }
     }
 
-    public static func withQMP<T>(_ bundle: VMBundle, _ body: (QMPClient) throws -> T) throws -> T {
+    private static let confirmLock = NSLock()
+    /// Laufende CD-Start-Bestätigungen je QMP-Socket mit ihrem Auftragszähler.
+    nonisolated(unsafe) private static var confirmRuns: [String: Int] = [:]
+
+    /// Wartet, bis die automatische Bestätigung des CD-Starts fertig ist (für `moonctl`, das sonst vorher endet).
+    public static func waitForCDBootConfirmation(_ bundle: VMBundle, timeout: TimeInterval) {
+        guard let qmp = runtime(of: bundle)?.sockets.qmp else { return }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            confirmLock.lock()
+            let running = confirmRuns[qmp] != nil
+            confirmLock.unlock()
+            if !running { return }
+            usleep(250_000)
+        }
+    }
+
+    public static func withQMP<T>(_ bundle: VMBundle, timeout: Double = 10, _ body: (QMPClient) throws -> T) throws -> T {
         guard let info = runtime(of: bundle) else { throw MoonError.notRunning }
-        let qmp = try QMPClient(path: info.sockets.qmp)
+        let qmp = try QMPClient(path: info.sockets.qmp, timeout: timeout)
         defer { qmp.close() }
         return try body(qmp)
     }
 
     /// ACPI-Ausschalter: Windows fährt sauber herunter.
-    public static func shutdown(_ bundle: VMBundle) throws {
-        try withQMP(bundle) { try $0.execute("system_powerdown") }
+    public static func shutdown(_ bundle: VMBundle, timeout: Double = 10) throws {
+        try withQMP(bundle, timeout: timeout) { try $0.execute("system_powerdown") }
     }
 
     /// Sofort ausschalten (wie Stecker ziehen).
@@ -240,6 +334,11 @@ public enum VMRunner {
 
     public static func restart(_ bundle: VMBundle) throws {
         try withQMP(bundle) { try $0.execute("system_reset") }
+        // Während der Installation fragt die Windows-ISO nach dem Neustart wieder nach einer Taste.
+        if let info = runtime(of: bundle), let config = info.config,
+           Installation.shouldConfirmCDBoot(bundle: bundle, config: config) {
+            confirmCDBootPrompt(bundle: bundle, sockets: info.sockets)
+        }
     }
 
     public static func pause(_ bundle: VMBundle) throws {
@@ -268,8 +367,15 @@ public enum VMRunner {
         }
     }
 
-    public static func captureThumbnail(_ bundle: VMBundle) throws {
-        try withQMP(bundle) { try $0.screendump(to: bundle.thumbnailURL) }
+    public static func captureThumbnail(_ bundle: VMBundle, timeout: Double = 10) throws {
+        let fm = FileManager.default
+        let fresh = bundle.url.appendingPathComponent(".thumbnail-new.png")
+        defer { try? fm.removeItem(at: fresh) }
+        try withQMP(bundle, timeout: timeout) { try $0.screendump(to: fresh) }
+        // QEMUs Ersatzbild („Guest has not initialized the display“) ersetzt keine echte Vorschau.
+        guard !DisplayPlaceholder.matches(pngAt: fresh) else { return }
+        try? fm.removeItem(at: bundle.thumbnailURL)
+        try fm.moveItem(at: fresh, to: bundle.thumbnailURL)
     }
 
     /// Wartet, bis die VM beendet ist.

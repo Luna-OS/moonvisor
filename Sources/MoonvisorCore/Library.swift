@@ -158,7 +158,8 @@ public enum Installation {
     /// eingelegt und die Festplatte noch leer ist. Früher galt das nur für den allerersten Start; scheiterte der,
     /// startete die Installation danach nicht mehr von selbst.
     public static func shouldConfirmCDBoot(bundle: VMBundle, config: VMConfig) -> Bool {
-        guard config.guestOS == .windows11, config.installMediaAttached, config.resumeSnapshot == nil else { return false }
+        guard config.guestOS == .windows11, config.installMediaAttached, config.installMediaPath != nil,
+              config.resumeSnapshot == nil else { return false }
         let size = (try? FileManager.default.attributesOfItem(atPath: bundle.diskURL.path))?[.size] as? NSNumber
         return (size?.int64Value ?? 0) < installedDiskThreshold
     }
@@ -172,5 +173,76 @@ public enum Installation {
             config.autoConfirmCDBoot = false
             try? bundle.saveConfig(config)
         }
+    }
+}
+
+/// Ablauf des automatischen Tastendrucks für „Press any key to boot from CD or DVD“, ohne QMP (testbar).
+struct CDBootConfirmation {
+    enum Step: Equatable { case wait, press, reset, done, giveUp }
+
+    /// Ab so vielen gelesenen Bytes lädt Windows boot.wim (mehrere hundert MB); bis zur Abfrage liest die
+    /// Firmware nur wenige MB von der ISO.
+    static let loadingThreshold: Int64 = 64 << 20
+    /// So lange pro Versuch Enter drücken. Mit Hypervisor.framework erscheint die Abfrage nach etwa fünf Sekunden.
+    static let attemptSeconds: Double = 45
+    static let maxResets = 2
+
+    private(set) var presses = 0
+    private(set) var resets = 0
+    private var attemptElapsed: Double = 0
+    /// QEMU zählt die gelesenen Bytes seit dem Start des Prozesses; gezählt wird ab Beginn des Versuchs.
+    private var baseline: Int64?
+
+    /// `read`: gelesene Bytes des Installationsmediums, `elapsed`: Zeit seit dem letzten Schritt.
+    mutating func next(read: Int64?, running: Bool, elapsed: Double) -> Step {
+        if let read {
+            let start = baseline ?? read
+            baseline = start
+            if read - start >= Self.loadingThreshold { return .done }
+        }
+        // Angehalten zählt nicht: Die Abfrage wartet dann auch.
+        guard running else { return .wait }
+        attemptElapsed += elapsed
+        if attemptElapsed > Self.attemptSeconds {
+            guard resets < Self.maxResets else { return .giveUp }
+            resets += 1
+            attemptElapsed = 0
+            baseline = nil
+            return .reset
+        }
+        presses += 1
+        return .press
+    }
+
+    /// `rd_bytes` eines Laufwerks aus der Antwort auf `query-blockstats`.
+    static func readBytes(fromBlockStats result: Any?, drive: String) -> Int64? {
+        guard let devices = result as? [[String: Any]],
+              let device = devices.first(where: { $0["device"] as? String == drive }),
+              let stats = device["stats"] as? [String: Any] else { return nil }
+        return (stats["rd_bytes"] as? NSNumber)?.int64Value
+    }
+}
+
+/// Kurzes Protokoll, was Moonvisor beim Start selbst getan hat (neben qemu.log, das QEMU schreibt).
+enum StartLog {
+    private static let lock = NSLock()
+
+    static func begin(_ bundle: VMBundle) {
+        lock.lock()
+        defer { lock.unlock() }
+        try? Data().write(to: bundle.startLogURL)
+    }
+
+    static func write(_ bundle: VMBundle, _ line: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        guard let handle = try? FileHandle(forWritingTo: bundle.startLogURL) else {
+            try? Data("\(stamp) \(line)\n".utf8).write(to: bundle.startLogURL)
+            return
+        }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: Data("\(stamp) \(line)\n".utf8))
     }
 }

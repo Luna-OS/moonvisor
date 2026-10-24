@@ -120,9 +120,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .alertFirstButtonReturn:
             return .terminateNow
         case .alertSecondButtonReturn:
+            // Kurze Wartezeiten: Eine hängende VM soll das Beenden nicht aufhalten.
             for entry in model.entries where entry.state != .stopped {
-                try? VMRunner.captureThumbnail(entry.bundle)
-                try? VMRunner.shutdown(entry.bundle)
+                try? VMRunner.captureThumbnail(entry.bundle, timeout: 2)
+                try? VMRunner.shutdown(entry.bundle, timeout: 2)
             }
             return .terminateNow
         default:

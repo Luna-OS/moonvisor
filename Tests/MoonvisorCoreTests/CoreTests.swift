@@ -1,3 +1,5 @@
+import CoreGraphics
+import ImageIO
 import XCTest
 @testable import MoonvisorCore
 
@@ -179,6 +181,10 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(current.memoryMB, 8192)
         XCTAssertFalse(current.soundEnabled)
         XCTAssertEqual(current.networkMode, .vmnet)
+        // Schnappschüsse älterer Versionen kennen den Gerätesatz nicht.
+        current.deviceRevision = 2
+        Snapshots.applyHardware(from: snapshot, to: &current)
+        XCTAssertNil(current.deviceRevision)
     }
 
     func testTransferPathsStayInsideTarget() {
@@ -307,5 +313,201 @@ final class CoreTests: XCTestCase {
                                toolchain: tools, sockets: RuntimeSockets(directory: "/t/mv")).arguments
         XCTAssertTrue(args.contains("tpm-tis-device,tpmdev=tpm0"))
         XCTAssertFalse(args.contains { $0.contains("ppi") })
+    }
+
+    private func command(_ config: VMConfig, ramfb: Bool = true, engine: URL? = nil, snapshot: String? = nil) -> QEMUCommand {
+        var tools = toolchain(engine: engine)
+        tools.hasVirtioRamfb = ramfb
+        var command = QEMUCommand(config: config, bundle: VMBundle(url: URL(fileURLWithPath: "/vms/G.moonvm")),
+                                  toolchain: tools, sockets: RuntimeSockets(directory: "/t/mv"))
+        command.loadSnapshot = snapshot
+        return command
+    }
+
+    func testWindowsShowsFirmwareAndDriverOnVirtioRamfb() {
+        var config = VMConfig(name: "Win", guestOS: .windows11, cpuCount: 4, memoryMB: 8192, diskSizeGB: 64)
+        XCTAssertEqual(command(config).display, .virtioRamfb)
+        XCTAssertTrue(command(config).arguments.contains("virtio-ramfb"))
+        XCTAssertTrue(command(config).arguments.contains("-vnc"))
+        config.graphics = .virtio
+        XCTAssertEqual(command(config).display, .virtioRamfb)
+        // Die Firmware der Engine kennt kein einzelnes ramfb: auch „Basis“ braucht virtio-ramfb.
+        config.graphics = .basic
+        XCTAssertEqual(command(config).display, .virtioRamfb)
+        XCTAssertFalse(command(config).arguments.contains("ramfb"))
+        // Homebrew-QEMU kennt virtio-ramfb nicht, seine Firmware dafür ramfb.
+        XCTAssertEqual(command(config, ramfb: false).display, .ramfb)
+        config.graphics = .automatic
+        XCTAssertEqual(command(config, ramfb: false).display, .ramfb)
+        config.graphics = .virtio
+        XCTAssertEqual(command(config, ramfb: false).display, .virtioGPU)
+        // Linux bleibt bei virtio-gpu.
+        var linux = VMConfig(name: "Tux", guestOS: .linux, cpuCount: 2, memoryMB: 4096, diskSizeGB: 32)
+        XCTAssertEqual(command(linux).display, .virtioGPU)
+        linux.graphics = .basic
+        XCTAssertEqual(command(linux).display, .virtioRamfb)
+    }
+
+    func testOldSnapshotsKeepTheirDisplayDevice() throws {
+        var config = VMConfig(name: "Win", guestOS: .windows11, cpuCount: 4, memoryMB: 8192, diskSizeGB: 64)
+        XCTAssertEqual(command(config, snapshot: "alt").deviceRevision, 1)
+        XCTAssertEqual(command(config, snapshot: "alt").display, .ramfb)
+        XCTAssertTrue(command(config, snapshot: "alt").arguments.contains("-loadvm"))
+        config.graphics = .virtio
+        XCTAssertEqual(command(config, snapshot: "alt").display, .virtioGPU)
+        config.deviceRevision = 2
+        XCTAssertEqual(command(config, snapshot: "neu").display, .virtioRamfb)
+        // Ohne Schnappschuss gilt immer der aktuelle Gerätesatz.
+        config.deviceRevision = 1
+        XCTAssertEqual(command(config).deviceRevision, QEMUCommand.currentDeviceRevision)
+        XCTAssertEqual(command(config).display, .virtioRamfb)
+
+        let data = try JSONEncoder().encode(config)
+        XCTAssertEqual(try JSONDecoder().decode(VMConfig.self, from: data).deviceRevision, 1)
+    }
+
+    func testDirectXUsesVirtioRamfbGLWithEngine() throws {
+        let fm = FileManager.default
+        let engine = fm.temporaryDirectory.appendingPathComponent("engine-\(UUID())")
+        try fm.createDirectory(at: engine.appendingPathComponent("Frameworks/dxmt-native.framework"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: engine.appendingPathComponent("libexec"), withIntermediateDirectories: true)
+        fm.createFile(atPath: engine.appendingPathComponent("libexec/virgl_render_server").path, contents: Data(),
+                      attributes: [.posixPermissions: 0o755])
+        defer { try? fm.removeItem(at: engine) }
+
+        var config = VMConfig(name: "3D", guestOS: .windows11, cpuCount: 4, memoryMB: 8192, diskSizeGB: 64)
+        config.graphics = .directX
+        let gl = command(config, engine: engine)
+        XCTAssertEqual(gl.display, .virtioRamfbGL)
+        XCTAssertTrue(gl.display.usesGL)
+        let args = gl.arguments
+        XCTAssertTrue(args.contains("virtio-ramfb-gl,hostmem=8192M,blob=true,neptune=true"))
+        XCTAssertTrue(args.contains("-spice"))
+        XCTAssertFalse(args.contains("-vnc"))
+        XCTAssertEqual(args[args.firstIndex(of: "-accel")! + 1], "hvf,ipa-granule-size=0x1000")
+        XCTAssertEqual(gl.environment["NPT_BACKEND"], "dxmt")
+        // Ohne 3D-Bausteine bleibt virtio-ramfb ohne OpenGL.
+        XCTAssertEqual(command(config).display, .virtioRamfb)
+        XCTAssertFalse(command(config).arguments.contains("-spice"))
+    }
+
+    func testCDBootIsConfirmedUntilWindowsLoadsFromTheISO() {
+        var confirmation = CDBootConfirmation()
+        XCTAssertEqual(confirmation.next(read: 0, running: true, elapsed: 0.5), .press)
+        XCTAssertEqual(confirmation.next(read: 2 << 20, running: true, elapsed: 0.5), .press)
+        // Angehalten: warten, die Zeit zählt nicht.
+        for _ in 0..<200 { XCTAssertEqual(confirmation.next(read: 2 << 20, running: false, elapsed: 0.5), .wait) }
+        XCTAssertEqual(confirmation.next(read: 300 << 20, running: true, elapsed: 0.5), .done)
+        XCTAssertEqual(confirmation.presses, 2)
+
+        // Abfrage verpasst: nach einem Versuch neu starten, nach zwei Neustarts aufgeben.
+        var missed = CDBootConfirmation()
+        var steps: [CDBootConfirmation.Step] = []
+        for _ in 0..<400 {
+            let step = missed.next(read: 160_000, running: true, elapsed: 0.5)
+            if step != .press { steps.append(step) }
+            if step == .giveUp { break }
+        }
+        XCTAssertEqual(steps, [.reset, .reset, .giveUp])
+        XCTAssertEqual(missed.resets, 2)
+
+        // Nach einem Neustart zählt QEMU weiter: Was vorher gelesen wurde, zählt nicht.
+        var restarted = CDBootConfirmation()
+        XCTAssertEqual(restarted.next(read: 900 << 20, running: true, elapsed: 0.5), .press)
+        XCTAssertEqual(restarted.next(read: 901 << 20, running: true, elapsed: 0.5), .press)
+        XCTAssertEqual(restarted.next(read: 1000 << 20, running: true, elapsed: 0.5), .done)
+    }
+
+    func testReadBytesComeFromBlockStats() throws {
+        let json = #"[{"device":"hd0","stats":{"rd_bytes":5}},{"device":"cd0","qdev":"/machine/peripheral-anon/device[4]","stats":{"rd_bytes":167938048,"wr_bytes":0}}]"#
+        let result = try JSONSerialization.jsonObject(with: Data(json.utf8))
+        XCTAssertEqual(CDBootConfirmation.readBytes(fromBlockStats: result, drive: QEMUCommand.installMediaDrive), 167938048)
+        XCTAssertNil(CDBootConfirmation.readBytes(fromBlockStats: result, drive: "cd7"))
+        XCTAssertNil(CDBootConfirmation.readBytes(fromBlockStats: nil, drive: "cd0"))
+    }
+
+    func testCDBootNeedsAnInstallMediumPath() throws {
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent("cdpath-\(UUID()).moonvm")
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: folder) }
+        var config = VMConfig(name: "Neu", guestOS: .windows11, cpuCount: 4, memoryMB: 8192, diskSizeGB: 64)
+        config.installMediaAttached = true
+        XCTAssertFalse(Installation.shouldConfirmCDBoot(bundle: VMBundle(url: folder), config: config))
+    }
+
+    /// Schwarzes Bild wie QEMUs Ersatzbild, optional mit grauer Schrift in Zeile `textRow`.
+    private func frame(width: Int = 640, height: Int = 480, bytesPerPixel: Int = 4, textRow: Int?, extra: (Int, Int, UInt8)? = nil) -> [UInt8] {
+        var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+        func set(_ x: Int, _ y: Int, _ value: UInt8) {
+            for c in 0..<3 { pixels[(y * width + x) * bytesPerPixel + c] = value }
+            if bytesPerPixel == 4 { pixels[(y * width + x) * 4 + 3] = 0xFF }
+        }
+        if let textRow {
+            for y in textRow..<(textRow + 12) { for x in stride(from: 200, to: 440, by: 3) { set(x, y, 0xAA) } }
+        }
+        if case let (x, y, v)? = extra { set(x, y, v) }
+        return pixels
+    }
+
+    private func isPlaceholder(_ pixels: [UInt8], width: Int = 640, height: Int = 480, bytesPerPixel: Int = 4) -> Bool {
+        pixels.withUnsafeBytes {
+            DisplayPlaceholder.matches($0.baseAddress!, width: width, height: height, bytesPerRow: width * bytesPerPixel,
+                                       bytesPerPixel: bytesPerPixel)
+        }
+    }
+
+    func testQEMUPlaceholderScreensAreRecognised() {
+        // 480 Zeilen: QEMU schreibt in Zeichenzeile 14, also ab Pixelzeile 224.
+        XCTAssertEqual(DisplayPlaceholder.textRows(height: 480), 224..<240)
+        XCTAssertEqual(DisplayPlaceholder.textRows(height: 600), 288..<304)
+        XCTAssertTrue(isPlaceholder(frame(textRow: 226)))
+        XCTAssertTrue(isPlaceholder(frame(textRow: 242)), "über OpenGL steht das Bild auf dem Kopf")
+        XCTAssertTrue(isPlaceholder(frame(bytesPerPixel: 3, textRow: 226), bytesPerPixel: 3))
+        XCTAssertFalse(isPlaceholder(frame(textRow: nil)), "ein schwarzes Bild ist ein echtes Bild")
+        XCTAssertFalse(isPlaceholder(frame(textRow: 10)), "Text oben links kommt von der Firmware")
+        XCTAssertFalse(isPlaceholder(frame(textRow: 226, extra: (5, 5, 0xAA))))
+        XCTAssertFalse(isPlaceholder(frame(textRow: 226, extra: (300, 230, 0xFF))), "weiße Schrift ist nicht von QEMU")
+    }
+
+    func testPlaceholderScreenshotIsNotUsedAsThumbnail() throws {
+        let width = 640, height = 480
+        var pixels = frame(textRow: 226)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("placeholder-\(UUID()).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        func writePNG() throws {
+            let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+            let image = try pixels.withUnsafeMutableBytes { raw -> CGImage in
+                let context = try XCTUnwrap(CGContext(data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                                      bytesPerRow: width * 4, space: space,
+                                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+                return try XCTUnwrap(context.makeImage())
+            }
+            let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil))
+            CGImageDestinationAddImage(destination, image, nil)
+            XCTAssertTrue(CGImageDestinationFinalize(destination))
+        }
+        try writePNG()
+        XCTAssertTrue(DisplayPlaceholder.matches(pngAt: url))
+        pixels[(10 * width + 10) * 4] = 0x40
+        try writePNG()
+        XCTAssertFalse(DisplayPlaceholder.matches(pngAt: url))
+    }
+
+    func testEFIVarsTemplateFormatIsDetected() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("vars-\(UUID()).fd")
+        defer { try? FileManager.default.removeItem(at: url) }
+        var header = [UInt8](repeating: 0, count: 64)
+        header[0..<4] = [0x51, 0x46, 0x49, 0xFB]
+        header[28] = 0x04 // 64 MiB
+        try Data(header).write(to: url)
+        XCTAssertEqual(Toolchain.imageFormat(of: url), "qcow2")
+        try Data(repeating: 0xFF, count: 64).write(to: url)
+        XCTAssertEqual(Toolchain.imageFormat(of: url), "raw")
+    }
+
+    func testDeviceProbeReadsTheHelpOutput() {
+        XCTAssertTrue(Toolchain.deviceListed("virtio-ramfb", inHelp: "virtio-ramfb options:\n  blob=<bool>"))
+        XCTAssertFalse(Toolchain.deviceListed("virtio-ramfb", inHelp: "qemu-system-aarch64: -device virtio-ramfb,help: Device 'virtio-ramfb' not found"))
     }
 }

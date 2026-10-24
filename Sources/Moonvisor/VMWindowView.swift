@@ -40,6 +40,8 @@ struct VMWindowContent: View {
     @State private var directXHintHidden = false
     /// Die Tools melden sich erst einige Zeit nach dem Windows-Start: vorher keinen Hinweis auf fehlende Tools zeigen.
     @State private var toolsOverdue = false
+    /// Die Startanzeige steht schon lange: dann erklären und einen Neustart anbieten.
+    @State private var waitingOverdue = false
 
     var body: some View {
         ZStack {
@@ -49,11 +51,22 @@ struct VMWindowContent: View {
                               autoResize: entry.config.usesVirtioGPU && entry.config.fixedResolution == nil,
                               onDropFiles: entry.toolsActive ? { urls in model.dropFiles(urls, into: entry) } : nil)
                     .ignoresSafeArea()
-                if !entry.display.connected {
+                // Bis Firmware oder Windows ein Bild ausgeben, zeigt QEMU nur einen englischen Hinweis
+                // („Guest has not initialized the display“). Den deckt die Startanzeige ab.
+                if showsWaitingOverlay {
                     overlay {
                         ProgressView().controlSize(.large).tint(Moon.accent)
-                        Text(entry.state == .stopping ? "Wird heruntergefahren …" : "\(entry.config.name) startet …")
+                        Text(waitingText)
                             .font(.system(size: 15, weight: .medium)).foregroundStyle(Moon.text)
+                        if waitingOverdue, entry.state == .running {
+                            Text(waitingHelp)
+                                .font(.system(size: 12)).foregroundStyle(Moon.textMuted)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 460)
+                            if !entry.directXSetupRunning {
+                                Button("Neu starten") { model.restart(entry) }.buttonStyle(MoonPrimaryButtonStyle())
+                            }
+                        }
                         if let error = entry.display.lastError {
                             Text("Bildschirm: \(error)")
                                 .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
@@ -92,6 +105,12 @@ struct VMWindowContent: View {
         .toolbarBackground(.visible, for: .windowToolbar)
         .modifier(FullScreenToolbar())
         .sheet(isPresented: $snapshotPrompt) { snapshotSheet }
+        .task(id: waitingKey) {
+            waitingOverdue = false
+            guard showsWaitingOverlay, entry.state == .running else { return }
+            try? await Task.sleep(for: .seconds(entry.display.hasShownGuest ? 30 : 60))
+            if !Task.isCancelled { waitingOverdue = true }
+        }
         .task(id: entry.display.connected) {
             toolsOverdue = false
             guard entry.display.connected else { return }
@@ -101,6 +120,31 @@ struct VMWindowContent: View {
         .onAppear {
             if entry.config.startOnOpen && entry.state == .stopped { model.start(entry) }
         }
+    }
+
+    /// Bis Firmware oder Windows ein Bild ausgeben, zeigt QEMU nur einen englischen Hinweis.
+    private var showsWaitingOverlay: Bool {
+        !entry.display.connected || (entry.display.waitingForGuest && entry.state != .paused)
+    }
+
+    private var waitingKey: String {
+        "\(entry.display.connected)|\(entry.display.waitingForGuest)|\(entry.state.rawValue)"
+    }
+
+    private var waitingHelp: String {
+        if entry.directXSetupRunning {
+            return "Der DirectX-Treiber wird eingerichtet. Windows startet dafür neu und zeigt so lange kein Bild."
+        }
+        if entry.display.hasShownGuest {
+            return "Windows gibt gerade kein Bild aus, etwa während ein Grafiktreiber wechselt. Kommt das Bild nicht wieder, hilft ein Neustart der VM."
+        }
+        return "Die VM zeigt seit dem Start kein Bild. Meist hilft ein Neustart. Bleibt es dabei, hilft das Protokoll bei der Fehlersuche."
+    }
+
+    private var waitingText: String {
+        if entry.state == .stopping { return "Wird heruntergefahren …" }
+        if entry.display.hasShownGuest { return "Warte auf das Bild von \(entry.config.name) …" }
+        return "\(entry.config.name) startet …"
     }
 
     private var subtitle: String {
@@ -129,7 +173,7 @@ struct VMWindowContent: View {
             return ("Die Moonvisor Tools in Windows sind zu alt für DirectX.", .installTools)
         }
         if entry.directXSetupRunning {
-            return ("DirectX-Treiber wird eingerichtet. Windows startet dafür zwei- bis dreimal neu; zwischendurch zeigt das Fenster „Display output is not active“. Das dauert einige Minuten – die VM bitte nicht ausschalten.", nil)
+            return ("DirectX-Treiber wird eingerichtet. Windows startet dafür zwei- bis dreimal neu; zwischendurch ist kurz kein Bild zu sehen. Das dauert einige Minuten – die VM bitte nicht ausschalten.", nil)
         }
         if DriverStore.cachedDirectXISO == nil {
             return ("Die DirectX-Treiber fehlen. Schalte die VM aus und starte sie neu, dann lädt Moonvisor sie herunter.", nil)

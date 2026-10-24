@@ -28,6 +28,8 @@ public struct Toolchain: Sendable {
     public var enginePrefix: URL?
     /// Ob das TPM-Gerät dieser QEMU-Version die Option `ppi` kennt (QEMU 11 ja, QEMU 10 nein).
     public var tpmHasPPI = true
+    /// UTMs QEMU (die Moonvisor-Engine) kennt `virtio-ramfb`, Homebrew-QEMU nicht.
+    public var hasVirtioRamfb = false
 
     /// DirectX 11 über Neptune/DXMT ist nur mit der Moonvisor-Engine möglich.
     public var supportsDirectX: Bool {
@@ -113,7 +115,8 @@ public struct Toolchain: Sendable {
         let vars = data.appendingPathComponent("edk2-arm-vars.fd")
         return Toolchain(qemuSystem: qemu, qemuImg: img, swtpm: newestSwtpm(default: s.swtpm), firmwareCode: fw,
                          firmwareVarsTemplate: vars, dataDirectory: data, enginePrefix: s.isMoonvisorEngine ? s.prefix : nil,
-                         tpmHasPPI: deviceHasProperty(qemu, device: "tpm-tis-device", property: "ppi"))
+                         tpmHasPPI: deviceHasProperty(qemu, device: "tpm-tis-device", property: "ppi"),
+                         hasVirtioRamfb: s.isMoonvisorEngine || deviceExists(qemu, device: "virtio-ramfb"))
     }
 
     private static let probeLock = NSLock()
@@ -135,6 +138,26 @@ public struct Toolchain: Sendable {
         return found
     }
 
+    /// Fragt QEMU, ob es ein Gerät kennt. `-device <gerät>,help` endet auch bei unbekannten Geräten mit Status 0
+    /// („Device '…' not found“), deshalb zählt nur die Liste der Optionen.
+    static func deviceExists(_ qemu: URL, device: String) -> Bool {
+        let key = "\(qemu.path)|\(device)"
+        probeLock.lock()
+        if let cached = probeCache[key] { probeLock.unlock(); return cached }
+        probeLock.unlock()
+        // Ließ sich QEMU nicht starten, nichts zwischenspeichern: beim nächsten Start erneut fragen.
+        guard let result = try? ProcessRunner.run(qemu, ["-device", "\(device),help"]) else { return false }
+        let found = deviceListed(device, inHelp: result.output)
+        probeLock.lock()
+        probeCache[key] = found
+        probeLock.unlock()
+        return found
+    }
+
+    static func deviceListed(_ device: String, inHelp output: String) -> Bool {
+        output.contains("\(device) options:") || output.contains("There are no options for \(device)")
+    }
+
     /// TPM-Zustand, den ein neueres swtpm/libtpms (0.10, z. B. aus Homebrew bei Moonvisor 0.1) angelegt hat,
     /// kann das ältere libtpms der Engine nicht lesen. Ist ein Homebrew-swtpm vorhanden, nimmt Moonvisor deshalb
     /// das: es liest alte wie neue Zustände. swtpm ist ein eigener Prozess, QEMU spricht nur über den Socket mit ihm.
@@ -150,16 +173,22 @@ public struct Toolchain: Sendable {
         let fm = FileManager.default
         if !fm.fileExists(atPath: bundle.efiVarsURL.path) {
             let source = fm.fileExists(atPath: bundle.legacyEfiVarsURL.path) ? bundle.legacyEfiVarsURL : firmwareVarsTemplate
-            let result = try ProcessRunner.run(qemuImg, ["convert", "-f", "raw", "-O", "qcow2", source.path, bundle.efiVarsURL.path])
+            let result = try ProcessRunner.run(qemuImg, ["convert", "-f", Self.imageFormat(of: source), "-O", "qcow2",
+                                                         source.path, bundle.efiVarsURL.path])
             guard result.status == 0 else { throw MoonError.processFailed("qemu-img", result.output) }
             if source == bundle.legacyEfiVarsURL { try? fm.removeItem(at: source) }
         }
         try padEFIVars(bundle.efiVarsURL)
     }
 
-    /// QEMU 10 liefert die Variablen-Vorlage ungepolstert (329 216 Bytes). Die virt-Maschine verlangt aber für beide
-    /// Flash-Bausteine genau die Größe der Firmware (64 MB). Auch VMs, die schon mit der kurzen Vorlage angelegt
-    /// wurden, werden hier repariert; der neue Bereich ist leer.
+    /// Die Vorlage der Engine (QEMU 10) ist selbst schon qcow2 mit 64 MB, ältere Vorlagen und efi-vars.fd sind roh.
+    static func imageFormat(of url: URL) -> String {
+        qcow2VirtualSize(url) == nil ? "raw" : "qcow2"
+    }
+
+    /// Bis Moonvisor 0.2.16 wurde die qcow2-Vorlage der Engine als Rohdaten umgewandelt: efi-vars.qcow2 war dann nur
+    /// 329 216 Bytes groß. Die virt-Maschine verlangt aber für beide Flash-Bausteine genau die Größe der Firmware (64 MB).
+    /// Solche VMs werden hier aufgefüllt; die Firmware legt den Variablenspeicher beim nächsten Start neu an.
     func padEFIVars(_ vars: URL) throws {
         let code = firmwareCode.resolvingSymlinksInPath()
         guard let codeSize = ((try? FileManager.default.attributesOfItem(atPath: code.path))?[.size] as? NSNumber)?.int64Value,

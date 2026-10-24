@@ -84,7 +84,7 @@ Die wichtigste Erkenntnis: Parallels startet Windows-VMs in einem eigenen Prozes
         ▼                            ▼                             ▼
   QEMU (virt, -accel hvf)       swtpm (TPM 2.0)            edk2 UEFI-Firmware
   Hypervisor.framework          pro VM eigener Zustand     + NVRAM pro VM
-  NVMe · virtio-net · ramfb/virtio-gpu · xHCI-Tastatur/Tablet · HDA-Ton
+  NVMe · virtio-net · virtio-ramfb/virtio-gpu · xHCI-Tastatur/Tablet · HDA-Ton
 ```
 
 - **Engine:** wird in CI aus den Quellen gebaut (`engine/`, Workflow `engine.yml`), mit der Build-Kette von [UTM](https://github.com/utmapp/UTM): QEMU mit Hypervisor.framework, swtpm, UEFI-Firmware, virglrenderer mit Neptune, ANGLE und DXMT, dazu `socket_vmnet` für das vmnet-Netzwerk. Das Paket liegt als Release `engine-<version>` bei; die App lädt es nach `~/Library/Application Support/Moonvisor/Engine`.

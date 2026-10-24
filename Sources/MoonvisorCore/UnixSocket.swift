@@ -126,9 +126,9 @@ public final class QMPClient: @unchecked Sendable {
     private let socket: UnixSocket
     private let lock = NSLock()
 
-    public init(path: String) throws {
+    public init(path: String, timeout: Double = 10) throws {
         socket = try UnixSocket(path: path)
-        socket.setReadTimeout(seconds: 10)
+        socket.setReadTimeout(seconds: timeout)
         _ = try socket.readLine() // Begrüßung
         _ = try execute("qmp_capabilities")
     }
