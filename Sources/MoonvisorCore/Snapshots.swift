@@ -123,7 +123,11 @@ public enum Snapshots {
     /// Läuft die VM, werden Arbeitsspeicher und Geräte mitgesichert (die VM pausiert dafür kurz).
     public static func create(_ bundle: VMBundle, name: String, toolchain: Toolchain) throws {
         let tag = sanitize(name)
-        if VMRunner.runtime(of: bundle) != nil {
+        if let info = VMRunner.runtime(of: bundle) {
+            // QEMU kann eine NVMe-Festplatte nicht mitsichern; Windows-VMs haben eine.
+            if (info.config ?? (try? bundle.loadConfig()))?.guestOS == .windows11 {
+                throw MoonError.qmp("Schnappschüsse einer laufenden Windows-VM sind nicht möglich: QEMU kann ihre NVMe-Festplatte nicht samt Arbeitsspeicher sichern. Fahre Windows herunter, dann sichert Moonvisor die Festplatte.")
+            }
             // Die Hardware vorher sichern: savevm antwortet erst, wenn der ganze Arbeitsspeicher geschrieben ist.
             let url = hardwareURL(bundle, tag)
             let previous = try? Data(contentsOf: url)

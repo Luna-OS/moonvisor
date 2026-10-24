@@ -28,6 +28,8 @@ final class VMEntry: Identifiable {
     let display = DisplaySession()
     @ObservationIgnored var agent: AgentChannel?
     @ObservationIgnored var displaySocket: String?
+    /// QEMU-Prozess, zu dem Bild und Tools-Kanal gehören. Startet die VM mit demselben Socket neu, ist es eine neue Sitzung.
+    @ObservationIgnored var runtimePID: Int32?
     @ObservationIgnored var thumbnailDate: Date?
     /// Wann „Herunterfahren“ angefordert wurde. Die Firmware und das Windows-Setup reagieren nicht auf den
     /// ACPI-Ausschalter; dann soll die VM nicht ewig als „Wird heruntergefahren …“ dastehen.
@@ -173,9 +175,10 @@ final class AppModel {
                         let socket = spice ? info.sockets.spice : info.sockets.vnc
                         // Neu verbinden, wenn die Verbindung abgerissen ist, die VM aber noch läuft (z. B. nach
                         // einem schnellen Neustart über moonctl mit demselben Socket).
-                        if entry.displaySocket != socket || entry.display.finished {
-                            let newSession = entry.displaySocket != socket
+                        let newSession = entry.displaySocket != socket || entry.runtimePID != info.qemuPID
+                        if newSession || entry.display.finished {
                             entry.displaySocket = socket
+                            entry.runtimePID = info.qemuPID
                             if spice {
                                 entry.display.connect(spicePath: socket, logURL: entry.bundle.url.appendingPathComponent("spice.log"))
                             } else {
@@ -185,6 +188,7 @@ final class AppModel {
                         }
                     } else if entry.displaySocket != nil {
                         entry.displaySocket = nil
+                        entry.runtimePID = nil
                         entry.display.disconnect()
                         entry.agent?.stop()
                         entry.agent = nil
@@ -217,12 +221,6 @@ final class AppModel {
                 if let version = Int(argument), version >= 4, version < GuestTools.version {
                     entry.agent?.sendAgentUpdate()
                 }
-                // Mit installierten Tools ist auch der virtio-GPU-Treiber da: ab dem nächsten Start dynamische Auflösung.
-                if entry.config.guestOS == .windows11 && entry.config.graphics == .automatic {
-                    var config = entry.config
-                    config.graphics = .virtio
-                    self.save(entry, config: config)
-                }
                 if entry.config.usesVirtioGPU { self.applyResolution(entry) }
                 if entry.config.graphics == .directX, (entry.toolsVersion ?? 0) >= 6 { entry.agent?.send("report") }
             case "report":
@@ -238,6 +236,14 @@ final class AppModel {
                 self.pasteboardCount = NSPasteboard.general.changeCount
             case "gpu":
                 entry.gpuDriver = argument
+                // Der virtio-GPU-Treiber läuft: ab jetzt dynamische Auflösung (mit virtio-ramfb ändert das kein Gerät).
+                if ["viogpudo", "viogpu3d"].contains(argument),
+                   entry.config.guestOS == .windows11 && entry.config.graphics == .automatic {
+                    var config = entry.config
+                    config.graphics = .virtio
+                    self.save(entry, config: config)
+                    self.applyResolution(entry)
+                }
                 // DirectX gewählt, Triton aber noch nicht aktiv: einmal pro Sitzung einrichten lassen.
                 if argument != "viogpu3d", !entry.directXSetupTried, entry.directXAutoSetups < 2, entry.canSetUpDirectX {
                     entry.directXAutoSetups += 1

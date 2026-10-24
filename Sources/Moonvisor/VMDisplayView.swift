@@ -376,6 +376,8 @@ final class DisplaySession {
             self.lastSurface = surface
             self.checkSurface = true
             self.updateResolution(width: client.width, height: client.height)
+            // Zeigt die Fläche schon das Ersatzbild, gleich abdecken; aufgedeckt wird erst beim Zeichnen.
+            if DisplayPlaceholder.matches(surface: surface, width: client.width, height: client.height) { self.setWaiting(true) }
             self.view?.show(surface: surface)
         }
         client.onDraw = { [weak self, weak client] in
