@@ -12,7 +12,7 @@ Verwendung:
   moonctl doctor                             Prüft Engine, TPM und Firmware
   moonctl engine install                     Moonvisor-Engine herunterladen
   moonctl create-windows --iso <pfad> [--name N] [--user U] [--password P]
-                         [--cpus 4] [--memory 4096] [--disk 64] [--edition pro|home] [--manual]
+                         [--cpus 4] [--memory 4096] [--disk 64] [--edition pro|home] [--manual] [--directx]
   moonctl import-parallels <pfad.pvm>        Parallels-VM übernehmen
   moonctl start <vm> [--wait]                Starten (mit --wait bis zum Ende warten)
   moonctl stop <vm> [--force]                Herunterfahren (--force: sofort aus)
@@ -138,6 +138,7 @@ func run() throws {
         let disk = Int(option("--disk") ?? "") ?? 64
         let edition = WindowsEdition(rawValue: option("--edition") ?? "pro") ?? .pro
         let manual = flag("--manual")
+        let directX = flag("--directx")
         guard let iso else { throw CLIError(message: "--iso <pfad> fehlt") }
         let toolchain = try Toolchain.locate()
         if DriverStore.cachedVirtioISO == nil {
@@ -156,7 +157,8 @@ func run() throws {
                                             locale: WindowsLocale.guess(isoPath: isoURL.path))
         let request = CreateRequest(name: name, guestOS: .windows11, installMedia: isoURL, cpuCount: cpus, memoryMB: memory,
                                     diskSizeGB: disk, profile: .custom, installMode: manual ? .manual : .express,
-                                    express: manual ? nil : express)
+                                    express: manual ? nil : express, graphics: directX ? .directX : .automatic)
+        if directX && !toolchain.supportsDirectX { throw MoonError.directXUnavailable }
         let bundle = try VMFactory.create(request, toolchain: toolchain) { print($0) }
         print("Erstellt: \(bundle.url.path)\nStarten mit: moonctl start \"\(name)\"")
 

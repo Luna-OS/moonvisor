@@ -31,6 +31,8 @@ struct AssistantView: View {
     @State private var memoryGB = 4
     @State private var diskGB = 64
     @State private var applyingProfile = false
+    /// DirectX gleich bei der Installation einrichten (nur Windows, nur mit der Moonvisor-Engine).
+    @State private var directX = false
 
     @State private var progressText = ""
     @State private var downloadProgress: Double?
@@ -372,6 +374,32 @@ struct AssistantView: View {
             }
             Text("Die Festplatte wächst nur mit den tatsächlich belegten Daten.")
                 .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
+            if source == .windows { setupCard }
+        }
+    }
+
+    /// Was Moonvisor beim ersten Anmelden in Windows einrichtet.
+    private var setupCard: some View {
+        MoonCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Moonvisor Tools und Treiber (Netzwerk, Auflösung, Zwischenablage, Dateien) werden automatisch eingerichtet.",
+                      systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 12)).foregroundStyle(Moon.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                if EngineStore.supportsDirectX {
+                    Toggle(isOn: $directX) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("DirectX 11 für Spiele einrichten (experimentell)").foregroundStyle(Moon.text)
+                            Text("Richtet den 3D-Treiber gleich bei der Installation ein; Windows startet danach einmal neu. Später umzustellen dauert länger und braucht mehrere Neustarts.")
+                                .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Moon.accent)
+                }
+            }
+            .padding(14)
         }
     }
 
@@ -432,6 +460,7 @@ struct AssistantView: View {
         applyingProfile = true
         cpus = s.cpus
         memoryGB = max(2, s.memoryMB / 1024)
+        directX = profile == .gaming && EngineStore.supportsDirectX
         DispatchQueue.main.async { applyingProfile = false }
     }
 
@@ -454,6 +483,7 @@ struct AssistantView: View {
         working = true
         progressText = "Wird vorbereitet …"
         let source = source, iso = iso, parallelsVM = parallelsVM
+        let withDirectX = directX && source == .windows && EngineStore.supportsDirectX
         let request = CreateRequest(
             name: name.trimmingCharacters(in: .whitespaces),
             guestOS: source == .windows ? .windows11 : .linux,
@@ -462,7 +492,8 @@ struct AssistantView: View {
             profile: profile,
             installMode: source == .windows ? (express ? .express : .manual) : .none,
             express: express ? ExpressInstallOptions(userName: userName, password: password, computerName: name,
-                                                     edition: edition, locale: WindowsLocale.guess(isoPath: iso?.path)) : nil
+                                                     edition: edition, locale: WindowsLocale.guess(isoPath: iso?.path)) : nil,
+            graphics: withDirectX ? .directX : .automatic
         )
         Task {
             do {

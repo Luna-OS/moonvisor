@@ -168,7 +168,9 @@ public enum UnattendBuilder {
                         </SynchronousCommand>
     """
 
-    public static func expressXML(_ o: ExpressInstallOptions) -> String {
+    /// `directX`: Die Moonvisor Tools richten beim ersten Anmelden Triton ein und starten Windows neu; danach
+    /// meldet Windows sich noch einmal von selbst an.
+    public static func expressXML(_ o: ExpressInstallOptions, directX: Bool = false) -> String {
         let user = xmlEscape(o.userName)
         let password = xmlEscape(o.password)
         let input = WindowsLocale.inputLocale(for: o.locale)
@@ -254,7 +256,7 @@ public enum UnattendBuilder {
                     </UserAccounts>
                     <AutoLogon>
                         <Enabled>true</Enabled>
-                        <LogonCount>1</LogonCount>
+                        <LogonCount>\(directX ? 2 : 1)</LogonCount>
                         <Username>\(user)</Username>
                         <Password><Value>\(password)</Value><PlainText>true</PlainText></Password>
                     </AutoLogon>

@@ -370,7 +370,7 @@ struct ConfigurationView: View {
         if entry.gpuDriver == "viogpu3d" {
             return "DirectX-Treiber (Triton) ist aktiv. Experimentell: nicht jedes Spiel läuft, DirectX 12 nicht."
         }
-        return "Experimentell (Triton, DirectX 11 über Metal). Beim nächsten Start lädt Moonvisor den Treiber (ca. 140 MB) und richtet ihn mit den Moonvisor Tools in Windows ein; Windows startet dafür zwei- bis dreimal neu. Speichere vorher deine Arbeit."
+        return "Experimentell (Triton, DirectX 11 über Metal). Beim nächsten Start lädt Moonvisor den Treiber (ca. 140 MB) und richtet ihn mit den Moonvisor Tools in Windows ein; Windows startet dafür zwei- bis dreimal neu. Speichere vorher deine Arbeit. Bei neuen VMs geht es schneller, wenn du DirectX gleich beim Erstellen wählst."
     }
 
     private var toolsOutdated: Bool { (entry.toolsVersion ?? 0) < GuestTools.version }
