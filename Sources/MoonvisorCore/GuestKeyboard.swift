@@ -23,6 +23,18 @@ public enum GuestKeyboard {
     public static let installToolsCommand =
         #"cmd /c for %d in (D E F G H I J K L M N O P Q R S T U V W) do if exist %d:\moontools.cmd %d:\moontools.cmd"#
 
+    /// Belegung, die Moonvisor bei der Express-Installation für dieses Windows-Gebietsschema einstellt
+    /// (siehe `WindowsLocale.inputLocales`). Nil, wenn Moonvisor sie nicht nachbilden kann.
+    public static func layout(forWindowsLocale locale: String) -> Layout? {
+        switch locale {
+        case "de-DE", "de-AT": return .german
+        case "de-CH": return .swissGerman
+        // US-International (nl-NL) unterscheidet sich nur bei Akzenten, die der Befehl nicht braucht.
+        case "en-US", "nl-NL": return .us
+        default: return nil
+        }
+    }
+
     /// Tastenkombinationen (qcodes) für jedes Zeichen von `text`.
     public static func keystrokes(for text: String, layout: Layout) throws -> [[String]] {
         try text.map { character in
