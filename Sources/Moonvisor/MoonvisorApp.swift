@@ -88,6 +88,8 @@ struct MoonCommands: Commands {
                 .disabled(vm?.state != .running || vm?.config.guestOS != .windows11)
             Button("Protokolle öffnen") { if let vm { model.openLog(vm) } }
                 .disabled(vm == nil)
+            Button("Diagnose kopieren") { if let vm { model.copyDiagnostics(vm) } }
+                .disabled(vm == nil)
             Divider()
             Button("Konfigurieren …") { if let vm { openWindow(id: "config", value: vm.id) } }
                 .disabled(vm == nil)
