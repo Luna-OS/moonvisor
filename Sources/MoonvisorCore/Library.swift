@@ -85,10 +85,14 @@ public struct CreateRequest: Sendable {
     public var profile: ResourceProfile
     public var installMode: InstallMode
     public var express: ExpressInstallOptions?
+    /// Grafikmodus von Anfang an. Mit DirectX richten die Moonvisor Tools beim ersten Anmelden gleich Triton ein,
+    /// statt erst den einfachen Treiber, der sich später nur über mehrere Neustarts wieder entfernen lässt.
+    public var graphics: GraphicsMode
     public var folder: URL
 
     public init(name: String, guestOS: GuestOS, installMedia: URL?, cpuCount: Int, memoryMB: Int, diskSizeGB: Int,
-                profile: ResourceProfile, installMode: InstallMode, express: ExpressInstallOptions?, folder: URL = VMLibrary.defaultFolder) {
+                profile: ResourceProfile, installMode: InstallMode, express: ExpressInstallOptions?,
+                graphics: GraphicsMode = .automatic, folder: URL = VMLibrary.defaultFolder) {
         self.name = name
         self.guestOS = guestOS
         self.installMedia = installMedia
@@ -98,6 +102,7 @@ public struct CreateRequest: Sendable {
         self.profile = profile
         self.installMode = installMode
         self.express = express
+        self.graphics = graphics
         self.folder = folder
     }
 }
@@ -121,6 +126,7 @@ public enum VMFactory {
             config.autoConfirmCDBoot = request.installMedia != nil && request.guestOS == .windows11
             config.attachDriversDisc = request.guestOS == .windows11 && DriverStore.cachedVirtioISO != nil
             config.tpmEnabled = request.guestOS == .windows11
+            config.graphics = request.graphics
 
             progress("Virtuelle Festplatte wird erstellt …")
             let result = try ProcessRunner.run(toolchain.qemuImg, ["create", "-f", "qcow2", "-o", "lazy_refcounts=on", bundle.diskURL.path, "\(request.diskSizeGB)G"])
@@ -133,7 +139,7 @@ public enum VMFactory {
                 progress("Installationshilfe wird erstellt …")
                 let xml: String
                 if request.installMode == .express, let express = request.express {
-                    xml = UnattendBuilder.expressXML(express)
+                    xml = UnattendBuilder.expressXML(express, directX: request.graphics == .directX)
                 } else {
                     xml = UnattendBuilder.manualXML(locale: WindowsLocale.guess(isoPath: request.installMedia?.path))
                 }

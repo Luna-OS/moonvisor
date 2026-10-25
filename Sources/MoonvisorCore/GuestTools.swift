@@ -83,12 +83,22 @@ public enum GuestTools {
     New-Item -ItemType Directory -Force -Path (Join-Path $base 'Tools') | Out-Null
     Start-Transcript -Path (Join-Path $base 'tools-install.log') -Append | Out-Null
 
+    # DirectX-CD eingelegt und noch kein Grafiktreiber da (neue VM mit DirectX): gleich Triton einrichten. Den
+    # einfachen Grafiktreiber später wieder zu entfernen braucht mehrere Neustarts und kann Windows durcheinanderbringen.
+    $hasDirectXDisc = $false
+    foreach ($root in (Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root })) {
+        if (Test-Path (Join-Path $root 'Drivers\viogpu3d\w11\ARM64\viogpu3d.inf')) { $hasDirectXDisc = $true }
+    }
+    $tritonDone = Test-Path (Join-Path $env:ProgramData 'Moonvisor\DirectX\installed.txt')
+    $installTriton = $hasDirectXDisc -and -not $tritonDone -and -not (Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Services\VioGpuDod')
+    if ($installTriton) { Write-Output 'Neue VM mit DirectX: Triton statt des einfachen Grafiktreibers.' }
+
     # ARM64-virtio-Treiber von der Treiber-CD
     foreach ($root in (Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root })) {
         if (Test-Path (Join-Path $root 'NetKVM')) {
             Write-Output "Treiber-CD: $root"
-            # Mit eingerichtetem DirectX-Treiber (Triton) den einfachen Grafiktreiber nicht wieder installieren.
-            $skipGpu = Test-Path (Join-Path $env:ProgramData 'Moonvisor\DirectX\installed.txt')
+            # Mit DirectX-Treiber (Triton) den einfachen Grafiktreiber nicht (wieder) installieren.
+            $skipGpu = $tritonDone -or $installTriton
             Get-ChildItem -Path $root -Directory | Where-Object { -not ($skipGpu -and $_.Name -eq 'viogpudo') } | ForEach-Object {
                 $dir = Join-Path $_.FullName 'w11\ARM64'
                 if (Test-Path $dir) {
@@ -114,7 +124,12 @@ public enum GuestTools {
     Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
         Where-Object { $_.CommandLine -like '*moon-agent.ps1*' } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
-    Start-Process conhost.exe -ArgumentList "--headless powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$agent`""
+    if ($installTriton) {
+        # Richtet Triton ein und startet Windows neu; den Agenten startet danach die Anmeldung.
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'setup-directx.ps1') -Phase 1
+    } else {
+        Start-Process conhost.exe -ArgumentList "--headless powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$agent`""
+    }
 
     Write-Output 'Moonvisor Tools installiert.'
     Stop-Transcript | Out-Null

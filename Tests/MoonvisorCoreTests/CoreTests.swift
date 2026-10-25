@@ -556,4 +556,29 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(ResourceProfile.gaming.suggestion(hostCPUs: 10, hostMemoryMB: 32768, performanceCores: 10).cpus, 8)
         XCTAssertEqual(ResourceProfile.development.suggestion(hostCPUs: 8, hostMemoryMB: 16384, performanceCores: 4).cpus, 6)
     }
+
+    func testExpressXMLLogsOnAgainAfterTheDirectXRestart() throws {
+        let options = ExpressInstallOptions(userName: "Luna", password: "", computerName: "Moon", locale: "de-DE", timeZone: "W. Europe Standard Time")
+        XCTAssertTrue(UnattendBuilder.expressXML(options).contains("<LogonCount>1</LogonCount>"))
+        let xml = UnattendBuilder.expressXML(options, directX: true)
+        XCTAssertTrue(xml.contains("<LogonCount>2</LogonCount>"))
+        _ = try XMLDocument(xmlString: xml)
+    }
+
+    func testToolsInstallTritonDirectlyOnNewDirectXVMs() {
+        // Neue VM mit DirectX-CD: kein einfacher Grafiktreiber, gleich Triton (setup-directx.ps1 Phase 1).
+        XCTAssertTrue(GuestTools.installScript.contains(#"Drivers\viogpu3d\w11\ARM64\viogpu3d.inf"#))
+        XCTAssertTrue(GuestTools.installScript.contains("$skipGpu = $tritonDone -or $installTriton"))
+        XCTAssertTrue(GuestTools.installScript.contains("setup-directx.ps1') -Phase 1"))
+        XCTAssertTrue(GuestTools.directXSetupScript.contains(#"Drivers\viogpu3d\w11\ARM64"#))
+    }
+
+    func testCreateRequestKeepsTheChosenGraphics() {
+        let plain = CreateRequest(name: "W", guestOS: .windows11, installMedia: nil, cpuCount: 4, memoryMB: 4096, diskSizeGB: 64,
+                                  profile: .gaming, installMode: .express, express: nil)
+        XCTAssertEqual(plain.graphics, .automatic)
+        let directX = CreateRequest(name: "W", guestOS: .windows11, installMedia: nil, cpuCount: 4, memoryMB: 4096, diskSizeGB: 64,
+                                    profile: .gaming, installMode: .express, express: nil, graphics: .directX)
+        XCTAssertEqual(directX.graphics, .directX)
+    }
 }

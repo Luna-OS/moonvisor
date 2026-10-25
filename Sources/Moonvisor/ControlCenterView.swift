@@ -40,6 +40,11 @@ struct ControlCenterView: View {
         .frame(minWidth: 460, minHeight: 420)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Button { model.checkForUpdates(userInitiated: true) } label: { Image(systemName: "arrow.down.circle") }
+                    .help("Nach Updates suchen")
+                    .disabled(model.updatePhase == .checking)
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button { openWindow(id: "assistant") } label: { Image(systemName: "plus") }
                     .help("Neue virtuelle Maschine")
             }
