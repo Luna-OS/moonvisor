@@ -181,6 +181,9 @@ final class SpiceClient: @unchecked Sendable, DisplayClient {
 
     private func runDisplay(_ channel: SpiceChannel) throws {
         var seen = 0
+        // Spiele im Vollbild wechseln bei jedem Bild die Fläche: nur Größenwechsel und jeden 500. Wechsel protokollieren.
+        var scanouts = 0
+        var loggedSize = (0, 0)
         while !isStopped {
             let (type, data) = try channel.readMessage()
             if seen < 40 {
@@ -199,7 +202,11 @@ final class SpiceClient: @unchecked Sendable, DisplayClient {
                     log?("Scanout \(w)×\(h): IOSurface nicht lesbar")
                     continue
                 }
-                log?("Scanout \(w)×\(h), IOSurface \(IOSurfaceGetID(surface))")
+                scanouts += 1
+                if loggedSize != (w, h) || scanouts % 500 == 0 {
+                    loggedSize = (w, h)
+                    log?("Scanout \(w)×\(h), IOSurface \(IOSurfaceGetID(surface)) (\(scanouts) bisher)")
+                }
                 DispatchQueue.main.async {
                     self.width = w
                     self.height = h

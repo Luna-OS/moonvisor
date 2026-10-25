@@ -1,0 +1,45 @@
+diff --git a/src/neptune/npt_shared.c b/src/neptune/npt_shared.c
+index c8741fd..5068d50 100644
+--- a/src/neptune/npt_shared.c
++++ b/src/neptune/npt_shared.c
+@@ -34,6 +34,20 @@
+ #include "neptune-protocol/npt_protocol_defs.h"
+ #include "neptune-protocol/npt_protocol_host_dispatch_types.h"
+ 
++#include <stdbool.h>
++#include <stdlib.h>
++
++/* Moonvisor: "shared: exported/opened" kommt bei jedem Bild mehrfach; der Render-Server leitet jede Zeile an
++ * syslog und stderr weiter. Nur noch mit NPT_LOG_SHARED protokollieren. */
++static bool
++npt_shared_log_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("NPT_LOG_SHARED") != NULL;
++   return enabled;
++}
++
+ /* D3D11_BIND_SHADER_RESOURCE (d3d11.h); consumers sample the texture. */
+ #define NPT_D3D11_BIND_SHADER_RESOURCE 0x8u
+ 
+@@ -157,7 +171,8 @@ npt_shared_export_handle(struct npt_context *ctx, uint64_t blob_id,
+       return NPT_E_FAIL;
+    }
+ 
+-   npt_log("shared: exported blob_id=%" PRIu64 " %ux%u fmt=%u mod=0x%016"
++   if (npt_shared_log_enabled())
++      npt_log("shared: exported blob_id=%" PRIu64 " %ux%u fmt=%u mod=0x%016"
+            PRIx64 " pitch=%" PRIu64 " (ctx %u)", blob_id, desc->meta.width,
+            desc->meta.height, desc->meta.dxgi_format, desc->drm_modifier,
+            desc->planes[0].pitch, ctx->ctx_id);
+@@ -356,7 +371,8 @@ npt_shared_open_res(struct npt_context *ctx, uint64_t device_id,
+                                is_d3d12 ? NPT_OBJECT_TYPE_ID3D12RESOURCE
+                                         : NPT_OBJECT_TYPE_ID3D11TEXTURE2D);
+ 
+-   npt_log("shared: opened res_id=%u -> id 0x%016" PRIx64 " (ctx %u)",
++   if (npt_shared_log_enabled())
++      npt_log("shared: opened res_id=%u -> id 0x%016" PRIx64 " (ctx %u)",
+            cmd->res_id, cmd->mint_object_id, ctx->ctx_id);
+    return NPT_S_OK;
+ }

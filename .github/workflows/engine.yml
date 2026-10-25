@@ -55,7 +55,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: utm/sysroot-macOS-arm64
-          key: engine-sysroot-${{ env.UTM_REF }}-ohne-vulkan-${{ hashFiles('engine/*.patch') }}
+          key: engine-sysroot-${{ env.UTM_REF }}-ohne-vulkan-${{ hashFiles('engine/*.patch', '.github/workflows/engine.yml') }}
 
       - name: Werkzeuge
         run: |
@@ -76,6 +76,10 @@ jobs:
           cat ../engine/qemu-*.patch > patches/qemu-10.0.12-utm.moonvisor.patch
           perl -0pi -e 's|(        patch -d "\$DIR" -p1 < "\$PATCH"\n    fi\n)|$1    if [ -f "\$PATCHES_DIR/\$\{NAME\}.moonvisor.patch" ]; then\n        echo "Moonvisor-Patch für \$\{NAME\}"\n        patch -d "\$DIR" -p1 < "\$PATCHES_DIR/\$\{NAME\}.moonvisor.patch"\n    fi\n|' scripts/build_dependencies.sh
           grep -q 'moonvisor.patch' scripts/build_dependencies.sh
+          # virglrenderer kommt per git clone: den Moonvisor-Patch nach dem Checkout anwenden (bereits angewendet: überspringen).
+          cp ../engine/virglrenderer.patch patches/virglrenderer.moonvisor.patch
+          perl -0pi -e 's|(    retry git -C "\$DIR" checkout "\$COMMIT"\n)|$1    if [ -f "\$PATCHES_DIR/\$\{NAME%.git\}.moonvisor.patch" ]; then\n        echo "Moonvisor-Patch für \$NAME"\n        git -C "\$DIR" apply --reverse --check "\$PATCHES_DIR/\$\{NAME%.git\}.moonvisor.patch" 2>/dev/null \|\| git -C "\$DIR" apply "\$PATCHES_DIR/\$\{NAME%.git\}.moonvisor.patch"\n    fi\n|' scripts/build_dependencies.sh
+          grep -q 'git -C "$DIR" apply' scripts/build_dependencies.sh
           # Der Patch passt nur zu dieser QEMU-Version; bei einem neuen UTM_REF muss er neu erstellt werden.
           QEMU_NAME="$(basename "$(grep '^QEMU_SRC=' patches/sources | cut -d'"' -f2)" .tar.xz)"
           test "$QEMU_NAME" = qemu-10.0.12-utm

@@ -157,7 +157,11 @@ struct ConfigurationView: View {
                         Stepper(value: $draft.cpuCount, in: 1...hostCPUs) {
                             Text("\(draft.cpuCount) von \(hostCPUs) Kernen").foregroundStyle(Moon.text)
                         }
-                        if draft.cpuCount > performanceCores && performanceCores < hostCPUs {
+                        if draft.graphics == .directX && draft.cpuCount >= performanceCores && performanceCores > 2 {
+                            Text("Mit DirectX setzt der Mac selbst die 3D-Grafik um und braucht dafür einen Leistungskern. Gib der VM höchstens \(performanceCores - 1) Kerne, sonst ruckeln Spiele.")
+                                .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if draft.cpuCount > performanceCores && performanceCores < hostCPUs {
                             Text("Dein Mac hat \(performanceCores) Leistungskerne. Mit mehr Kernen landet die VM auch auf den langsameren Effizienzkernen, Spiele ruckeln dann eher.")
                                 .font(.system(size: 11)).foregroundStyle(Moon.textMuted)
                                 .fixedSize(horizontal: false, vertical: true)

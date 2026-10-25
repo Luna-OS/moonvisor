@@ -7,7 +7,7 @@ import Foundation
 public enum EngineStore {
     /// Engine-Version, zu der diese App passt.
     /// Muss zu engine/VERSION passen (geprüft im Test).
-    public static let requiredVersion = "3"
+    public static let requiredVersion = "4"
     public static let repository = "Luna-OS/moonvisor"
 
     public static var releaseURL: URL {

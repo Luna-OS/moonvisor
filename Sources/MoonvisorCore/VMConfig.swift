@@ -107,8 +107,9 @@ public enum ResourceProfile: String, Codable, CaseIterable, Sendable {
             return (max(2, hostCPUs - 2), clampMemory(8192, host: hostMemoryMB))
         case .gaming:
             // Spiele laufen am ruhigsten nur auf Leistungskernen: Windows wartet bei jedem Bild auf alle Kerne,
-            // ein Effizienzkern bremst dann das ganze Spiel. Zwei Kerne bleiben für macOS und QEMU frei.
-            let cores = min(performanceCores ?? hostCPUs, hostCPUs - 2)
+            // ein Effizienzkern bremst dann das ganze Spiel. Ein Leistungskern bleibt für den Mac, der die
+            // DirectX-Befehle in Metal umsetzt, und insgesamt zwei Kerne für macOS und QEMU.
+            let cores = min((performanceCores ?? hostCPUs) - 1, hostCPUs - 2)
             return (max(2, cores), clampMemory(8192, host: hostMemoryMB))
         case .custom:
             return (min(4, half), clampMemory(4096, host: hostMemoryMB))

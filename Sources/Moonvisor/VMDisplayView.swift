@@ -378,9 +378,10 @@ final class DisplaySession {
             let handle = try? FileHandle(forWritingTo: logURL)
             _ = try? handle?.seekToEnd()
             let queue = DispatchQueue(label: "moonvisor.spice.log")
+            let formatter = ISO8601DateFormatter()
             client.log = { line in
                 queue.async {
-                    let stamp = ISO8601DateFormatter().string(from: Date())
+                    let stamp = formatter.string(from: Date())
                     try? handle?.write(contentsOf: Data("\(stamp) \(line)\n".utf8))
                 }
             }
@@ -476,8 +477,9 @@ extension DisplayPlaceholder {
     /// Prüft die IOSurface aus dem DirectX-Modus (SPICE mit OpenGL).
     static func matches(surface: IOSurfaceRef, width: Int, height: Int) -> Bool {
         guard IOSurfaceGetBytesPerElement(surface) == 4,
-              IOSurfaceLock(surface, .readOnly, nil) == KERN_SUCCESS else { return false }
-        defer { IOSurfaceUnlock(surface, .readOnly, nil) }
+              // Nicht auf die Grafikkarte warten: Bei Spielen kommt das bei jedem Bildwechsel vor.
+              IOSurfaceLock(surface, [.readOnly, .avoidSync], nil) == KERN_SUCCESS else { return false }
+        defer { IOSurfaceUnlock(surface, [.readOnly, .avoidSync], nil) }
         let w = min(width, IOSurfaceGetWidth(surface)), h = min(height, IOSurfaceGetHeight(surface))
         return matches(IOSurfaceGetBaseAddress(surface), width: w, height: h, bytesPerRow: IOSurfaceGetBytesPerRow(surface))
     }

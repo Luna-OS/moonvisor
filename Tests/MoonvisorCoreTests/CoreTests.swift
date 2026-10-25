@@ -548,10 +548,10 @@ final class CoreTests: XCTestCase {
     }
 
     func testGamingProfileUsesPerformanceCores() {
-        // M1: 4 Leistungs- und 4 Effizienzkerne.
-        XCTAssertEqual(ResourceProfile.gaming.suggestion(hostCPUs: 8, hostMemoryMB: 16384, performanceCores: 4).cpus, 4)
+        // M1: 4 Leistungs- und 4 Effizienzkerne; einer bleibt für die DirectX-Umsetzung auf dem Mac.
+        XCTAssertEqual(ResourceProfile.gaming.suggestion(hostCPUs: 8, hostMemoryMB: 16384, performanceCores: 4).cpus, 3)
         // M3 Pro: 6 + 6.
-        XCTAssertEqual(ResourceProfile.gaming.suggestion(hostCPUs: 12, hostMemoryMB: 18432, performanceCores: 6).cpus, 6)
+        XCTAssertEqual(ResourceProfile.gaming.suggestion(hostCPUs: 12, hostMemoryMB: 18432, performanceCores: 6).cpus, 5)
         // Nur Leistungskerne: zwei bleiben für macOS frei.
         XCTAssertEqual(ResourceProfile.gaming.suggestion(hostCPUs: 10, hostMemoryMB: 32768, performanceCores: 10).cpus, 8)
         XCTAssertEqual(ResourceProfile.development.suggestion(hostCPUs: 8, hostMemoryMB: 16384, performanceCores: 4).cpus, 6)
