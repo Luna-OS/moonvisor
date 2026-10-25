@@ -40,6 +40,9 @@ struct VMWindowContent: View {
     @State private var directXHintHidden = false
     /// Die Tools melden sich erst einige Zeit nach dem Windows-Start: vorher keinen Hinweis auf fehlende Tools zeigen.
     @State private var toolsOverdue = false
+    /// Während der Windows-Installation kommen die Tools erst nach dem ersten Anmelden. Melden sie sich auch nach
+    /// einer Stunde nicht, ist wohl etwas schiefgegangen.
+    @State private var setupOverdue = false
     /// Die Startanzeige steht schon lange: dann erklären und einen Neustart anbieten.
     @State private var waitingOverdue = false
 
@@ -116,9 +119,13 @@ struct VMWindowContent: View {
         }
         .task(id: entry.display.connected) {
             toolsOverdue = false
+            setupOverdue = false
             guard entry.display.connected else { return }
             try? await Task.sleep(for: .seconds(90))
+            guard !Task.isCancelled else { return }
             toolsOverdue = true
+            try? await Task.sleep(for: .seconds(60 * 60 - 90))
+            if !Task.isCancelled { setupOverdue = true }
         }
         .onAppear {
             if entry.config.startOnOpen && entry.state == .stopped { model.start(entry) }
@@ -174,6 +181,12 @@ struct VMWindowContent: View {
         }
         guard entry.config.graphics == .directX, entry.gpuDriver != "viogpu3d" else { return nil }
         if !entry.toolsActive {
+            // Während der Windows-Installation nicht drängeln: Die Tools (und DirectX) kommen nach dem ersten
+            // Anmelden von selbst. Der Hinweis erscheint erst, wenn Windows fertig sein müsste.
+            if entry.windowsSetupPending {
+                guard setupOverdue else { return nil }
+                return ("Die Moonvisor Tools haben sich noch nicht gemeldet. Ist Windows fertig eingerichtet und bist du angemeldet, installiert Moonvisor sie mit einem Klick.", .installTools)
+            }
             guard toolsOverdue else { return nil }
             return ("DirectX braucht die Moonvisor Tools. Melde dich in Windows an, dann installiert Moonvisor sie für dich.", .installTools)
         }

@@ -59,6 +59,18 @@ final class VMEntry: Identifiable {
             && !directXSetupRunning && DriverStore.cachedDirectXISO != nil
     }
 
+    /// Die Moonvisor Tools haben sich in dieser VM schon einmal gemeldet.
+    var toolsSeen: Bool {
+        get { UserDefaults.standard.bool(forKey: "toolsSeen.\(config.id)") }
+        set { UserDefaults.standard.set(newValue, forKey: "toolsSeen.\(config.id)") }
+    }
+
+    /// Hat Moonvisor Windows installiert und kamen die Tools noch nie, läuft meist noch das Windows-Setup:
+    /// Die Tools richten sich beim ersten Anmelden von selbst ein.
+    var windowsSetupPending: Bool {
+        config.guestOS == .windows11 && config.installMode != .none && !toolsSeen
+    }
+
     /// Automatische Einrichtungsversuche über alle Sitzungen. Schlägt sie fehl, nicht bei jedem Start neu starten.
     var directXAutoSetups: Int {
         get { UserDefaults.standard.integer(forKey: "directXAutoSetups.\(config.id)") }
@@ -281,6 +293,7 @@ final class AppModel {
             switch command {
             case "hello":
                 entry.toolsActive = true
+                entry.toolsSeen = true
                 entry.toolsInstallRequested = false
                 entry.toolsVersion = Int(argument)
                 // Ältere Agenten ab Version 4 aktualisieren sich selbst.
