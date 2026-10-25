@@ -162,6 +162,8 @@ public enum VMRunner {
         // Mit diesen Geräten läuft die VM; Schnappschüsse aus dieser Sitzung merken sie sich (Laufzeit-Konfiguration).
         config.deviceRevision = command.deviceRevision
 
+        let fileLimit = ProcessLimits.raiseOpenFileLimit()
+
         var swtpm: Process?
         if config.tpmEnabled {
             guard let swtpmURL = toolchain.swtpm else { throw ToolchainError.missing(["swtpm (TPM 2.0)"]) }
@@ -211,6 +213,7 @@ public enum VMRunner {
         try encoder.encode(info).write(to: bundle.runtimeURL, options: .atomic)
 
         StartLog.begin(bundle)
+        StartLog.write(bundle, "Limit für offene Dateien: \(fileLimit)")
         if confirmCDBoot {
             confirmCDBootPrompt(bundle: bundle, sockets: sockets)
         }
@@ -318,6 +321,16 @@ public enum VMRunner {
     }
 
     /// ACPI-Ausschalter: Windows fährt sauber herunter.
+    /// Schreibt die Zahl offener Dateien von QEMU ins Startprotokoll, sobald sie um 200 gestiegen ist: So zeigt
+    /// `start.log`, ob der Grafikpfad Dateien verliert. Gibt den zuletzt protokollierten Stand zurück.
+    public static func noteOpenFiles(_ bundle: VMBundle, pid: Int32, lastLogged: Int) -> Int {
+        guard let count = ProcessLimits.openFileCount(pid: pid), lastLogged == 0 || count >= lastLogged + 200 else {
+            return lastLogged
+        }
+        StartLog.write(bundle, "QEMU hat \(count) Dateien offen")
+        return count
+    }
+
     public static func shutdown(_ bundle: VMBundle, timeout: Double = 10) throws {
         try withQMP(bundle, timeout: timeout) { try $0.execute("system_powerdown") }
     }

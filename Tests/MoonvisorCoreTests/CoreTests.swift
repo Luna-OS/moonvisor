@@ -608,4 +608,11 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(Diagnostics.tail(of: url, lines: 3), "Zeile 98\nZeile 99\nZeile 100")
         XCTAssertNil(Diagnostics.tail(of: url.appendingPathExtension("fehlt"), lines: 3))
     }
+
+    func testOpenFileLimitAllowsLargePolls() throws {
+        // Ab 1024 Einträgen lehnt macOS poll() ab, wenn das Limit darunter liegt (QEMU hing dann mit DirectX).
+        XCTAssertGreaterThan(ProcessLimits.raiseOpenFileLimit(), 1024)
+        let open = try XCTUnwrap(ProcessLimits.openFileCount(pid: getpid()))
+        XCTAssertGreaterThan(open, 2)
+    }
 }
