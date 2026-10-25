@@ -91,15 +91,23 @@ final class VMDisplayNSView: NSView {
     }
 
     override func resetCursorRects() {
-        addCursorRect(imageRect(), cursor: cursorInImage)
+        addCursorRect(imageRect().intersection(unobscuredRect), cursor: cursorInImage)
     }
 
     override func cursorUpdate(with event: NSEvent) {
-        if imageRect().contains(convert(event.locationInWindow, from: nil)) {
+        let point = convert(event.locationInWindow, from: nil)
+        if imageRect().contains(point) && unobscuredRect.contains(point) {
             cursorInImage.set()
         } else {
             NSCursor.arrow.set()
         }
+    }
+
+    /// Teil des Views, den die Symbolleiste nicht verdeckt. Der View reicht unter die Titelleiste; dort braucht
+    /// man den Mac-Zeiger für Neustart und Einstellungen, und Bewegungen gehören nicht in den Gast.
+    private var unobscuredRect: CGRect {
+        guard let window else { return bounds }
+        return bounds.intersection(convert(window.contentLayoutRect, from: nil))
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -177,7 +185,10 @@ final class VMDisplayNSView: NSView {
         sendPointer(event)
     }
 
-    override func mouseMoved(with event: NSEvent) { sendPointer(event) }
+    override func mouseMoved(with event: NSEvent) {
+        guard unobscuredRect.contains(convert(event.locationInWindow, from: nil)) else { return }
+        sendPointer(event)
+    }
     override func mouseDragged(with event: NSEvent) { sendPointer(event) }
     override func rightMouseDragged(with event: NSEvent) { sendPointer(event) }
     override func otherMouseDragged(with event: NSEvent) { sendPointer(event) }

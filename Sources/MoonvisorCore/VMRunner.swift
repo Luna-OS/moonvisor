@@ -361,7 +361,8 @@ public enum VMRunner {
         let strokes = try GuestKeyboard.keystrokes(for: command, layout: layout)
         try withQMP(bundle) { qmp in
             try qmp.sendKeys(["meta_l", "r"])
-            Thread.sleep(forTimeInterval: 1.5)
+            // „Ausführen“ braucht kurz, bis es Eingaben annimmt; vorher getippte Zeichen landen im falschen Fenster.
+            Thread.sleep(forTimeInterval: 2.5)
             for keys in strokes {
                 try qmp.sendKeys(keys, holdMillis: 20)
             }

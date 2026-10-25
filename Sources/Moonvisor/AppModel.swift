@@ -23,6 +23,10 @@ final class VMEntry: Identifiable {
     @ObservationIgnored var directXSetupStarted: Date?
     /// „Moonvisor Tools installieren“ wurde gestartet; Windows wartet auf die Bestätigung der Adminrechte.
     var toolsInstallRequested = false
+    /// Wann der Befehl in Windows getippt wurde (für die Fortschrittsanzeige im VM-Fenster).
+    var toolsInstallStarted: Date?
+    /// Wann sich die Tools nach „Moonvisor Tools installieren“ gemeldet haben (Erfolgsmeldung für zehn Sekunden).
+    var toolsInstalledAt: Date?
     /// Warum die VM zuletzt nicht starten konnte oder unerwartet beendet wurde.
     var lastFailure: String?
     let display = DisplaySession()
@@ -57,6 +61,18 @@ final class VMEntry: Identifiable {
     var canSetUpDirectX: Bool {
         config.graphics == .directX && toolsActive && (toolsVersion ?? 0) >= 5
             && !directXSetupRunning && DriverStore.cachedDirectXISO != nil
+    }
+
+    /// Die Moonvisor Tools haben sich in dieser VM schon einmal gemeldet.
+    var toolsSeen: Bool {
+        get { UserDefaults.standard.bool(forKey: "toolsSeen.\(config.id)") }
+        set { UserDefaults.standard.set(newValue, forKey: "toolsSeen.\(config.id)") }
+    }
+
+    /// Hat Moonvisor Windows installiert und kamen die Tools noch nie, läuft meist noch das Windows-Setup:
+    /// Die Tools richten sich beim ersten Anmelden von selbst ein.
+    var windowsSetupPending: Bool {
+        config.guestOS == .windows11 && config.installMode != .none && !toolsSeen
     }
 
     /// Automatische Einrichtungsversuche über alle Sitzungen. Schlägt sie fehl, nicht bei jedem Start neu starten.
@@ -281,6 +297,15 @@ final class AppModel {
             switch command {
             case "hello":
                 entry.toolsActive = true
+                entry.toolsSeen = true
+                if entry.toolsInstallRequested {
+                    // Kurz bestätigen, dass die Installation geklappt hat.
+                    let stamp = Date()
+                    entry.toolsInstalledAt = stamp
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak entry] in
+                        if entry?.toolsInstalledAt == stamp { entry?.toolsInstalledAt = nil }
+                    }
+                }
                 entry.toolsInstallRequested = false
                 entry.toolsVersion = Int(argument)
                 // Ältere Agenten ab Version 4 aktualisieren sich selbst.
@@ -538,7 +563,12 @@ final class AppModel {
             errorMessage = "Diese VM läuft noch mit der CD einer älteren Moonvisor-Version. Fahre Windows herunter, starte die VM wieder und wähle dann erneut „Moonvisor Tools installieren“."
             return
         }
-        let layout = KeyMap.guestLayout
+        // Hat Moonvisor Windows selbst installiert, kennt es die Tastaturbelegung dort. Sonst die des Macs annehmen:
+        // Passt sie nicht, kommen Zeichen wie „/“ falsch an, und Windows öffnet nur eine leere Eingabeaufforderung.
+        let windowsLayout = entry.config.installMode == .express
+            ? GuestKeyboard.layout(forWindowsLocale: WindowsLocale.guess(isoPath: entry.config.installMediaPath)) : nil
+        let layout = windowsLayout ?? KeyMap.guestLayout
+        entry.toolsInstalledAt = nil
         entry.busyMessage = "Moonvisor Tools werden installiert …"
         let bundle = entry.bundle
         worker.async {
@@ -547,6 +577,7 @@ final class AppModel {
                 DispatchQueue.main.async {
                     entry.busyMessage = nil
                     entry.toolsInstallRequested = true
+                    entry.toolsInstallStarted = Date()
                 }
             } catch {
                 DispatchQueue.main.async {

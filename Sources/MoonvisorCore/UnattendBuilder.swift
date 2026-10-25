@@ -283,7 +283,7 @@ public enum UnattendBuilder {
         $installer = Join-Path $root 'moon-tools\install.ps1'
         if (Test-Path $installer) {
             Write-Output "Moonvisor Tools: $installer"
-            & $installer
+            & $installer -Unattended
         }
     }
 

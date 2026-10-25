@@ -40,6 +40,9 @@ struct VMWindowContent: View {
     @State private var directXHintHidden = false
     /// Die Tools melden sich erst einige Zeit nach dem Windows-Start: vorher keinen Hinweis auf fehlende Tools zeigen.
     @State private var toolsOverdue = false
+    /// Während der Windows-Installation kommen die Tools erst nach dem ersten Anmelden. Melden sie sich auch nach
+    /// einer Stunde nicht, ist wohl etwas schiefgegangen.
+    @State private var setupOverdue = false
     /// Die Startanzeige steht schon lange: dann erklären und einen Neustart anbieten.
     @State private var waitingOverdue = false
 
@@ -82,10 +85,12 @@ struct VMWindowContent: View {
                         }
                     }
                 }
-                if entry.display.connected, entry.state == .running, !directXHintHidden, let hint = directXHint {
-                    VStack {
+                if entry.display.connected, entry.state == .running,
+                   entry.toolsInstallRequested || entry.toolsInstalledAt != nil || (!directXHintHidden && directXHint != nil) {
+                    VStack(spacing: 8) {
                         Spacer()
-                        directXBanner(hint)
+                        toolsInstallBanner
+                        if !directXHintHidden, let hint = directXHint { directXBanner(hint) }
                     }
                     .padding(16)
                 }
@@ -116,9 +121,13 @@ struct VMWindowContent: View {
         }
         .task(id: entry.display.connected) {
             toolsOverdue = false
+            setupOverdue = false
             guard entry.display.connected else { return }
             try? await Task.sleep(for: .seconds(90))
+            guard !Task.isCancelled else { return }
             toolsOverdue = true
+            try? await Task.sleep(for: .seconds(60 * 60 - 90))
+            if !Task.isCancelled { setupOverdue = true }
         }
         .onAppear {
             if entry.config.startOnOpen && entry.state == .stopped { model.start(entry) }
@@ -167,13 +176,74 @@ struct VMWindowContent: View {
 
     private enum HintAction { case installTools, setUpDirectX }
 
-    /// Hinweis unten im VM-Fenster: Tools-Installation läuft, Tools fehlen, oder warum DirectX noch nicht läuft.
-    private var directXHint: (text: String, action: HintAction?)? {
-        if entry.toolsInstallRequested && !entry.toolsActive {
-            return ("Moonvisor Tools werden installiert. Windows fragt nach Administratorrechten – klicke im VM-Fenster auf „Ja“. Danach verbinden sich die Tools nach etwa einer Minute von selbst.", nil)
+    /// Fortschritt von „Moonvisor Tools installieren“: läuft (mit Zeit), fertig, oder kam nicht an.
+    @ViewBuilder private var toolsInstallBanner: some View {
+        if entry.toolsInstallRequested && !entry.toolsActive, let started = entry.toolsInstallStarted {
+            TimelineView(.periodic(from: started, by: 1)) { context in
+                let elapsed = max(0, Int(context.date.timeIntervalSince(started)))
+                if elapsed < Self.toolsInstallTimeout {
+                    statusBanner {
+                        ProgressView().controlSize(.small).tint(Moon.accent)
+                    } text: {
+                        Text("Moonvisor Tools werden installiert … \(elapsed / 60):\(String(format: "%02d", elapsed % 60))").fontWeight(.semibold)
+                        + Text("\nWindows fragt nach Administratorrechten – klicke im VM-Fenster auf „Ja“. Den Fortschritt zeigt das Fenster „Moonvisor Tools“ in Windows; danach verbinden sich die Tools von selbst.")
+                    } actions: {
+                        EmptyView()
+                    }
+                } else {
+                    statusBanner {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Moon.gold)
+                    } text: {
+                        Text("Die Moonvisor Tools haben sich nach \(Self.toolsInstallTimeout / 60) Minuten noch nicht gemeldet. Öffne in Windows den Explorer, dort das Laufwerk „MOONTOOLS“, und doppelklicke „Moonvisor Tools installieren“.")
+                    } actions: {
+                        Button("Erneut versuchen") { model.installTools(entry) }
+                            .buttonStyle(MoonPrimaryButtonStyle())
+                        Button { entry.toolsInstallRequested = false } label: { Image(systemName: "xmark") }
+                            .buttonStyle(.plain).foregroundStyle(Moon.textMuted)
+                            .help("Hinweis ausblenden")
+                    }
+                }
+            }
+        } else if entry.toolsInstalledAt != nil {
+            statusBanner {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(Moon.mint)
+            } text: {
+                Text("Moonvisor Tools sind installiert. Auflösung, Zwischenablage und Dateien funktionieren jetzt.")
+            } actions: {
+                EmptyView()
+            }
         }
+    }
+
+    /// So lange darf die Installation dauern (inklusive „Ja“ in Windows), bevor Moonvisor Hilfe anbietet.
+    private static let toolsInstallTimeout = 4 * 60
+
+    private func statusBanner<Icon: View, Actions: View>(@ViewBuilder icon: () -> Icon, text: () -> Text,
+                                                          @ViewBuilder actions: () -> Actions) -> some View {
+        HStack(spacing: 12) {
+            icon()
+            text()
+                .font(.system(size: 12)).foregroundStyle(Moon.text)
+                .fixedSize(horizontal: false, vertical: true)
+            actions()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .frame(maxWidth: 720)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Moon.deep.opacity(0.92)))
+    }
+
+    /// Hinweis unten im VM-Fenster: Tools fehlen, oder warum DirectX noch nicht läuft.
+    private var directXHint: (text: String, action: HintAction?)? {
+        // Läuft gerade „Moonvisor Tools installieren“, zeigt das eigene Banner den Fortschritt.
+        if entry.toolsInstallRequested && !entry.toolsActive { return nil }
         guard entry.config.graphics == .directX, entry.gpuDriver != "viogpu3d" else { return nil }
         if !entry.toolsActive {
+            // Während der Windows-Installation nicht drängeln: Die Tools (und DirectX) kommen nach dem ersten
+            // Anmelden von selbst. Der Hinweis erscheint erst, wenn Windows fertig sein müsste.
+            if entry.windowsSetupPending {
+                guard setupOverdue else { return nil }
+                return ("Die Moonvisor Tools haben sich noch nicht gemeldet. Ist Windows fertig eingerichtet und bist du angemeldet, installiert Moonvisor sie mit einem Klick.", .installTools)
+            }
             guard toolsOverdue else { return nil }
             return ("DirectX braucht die Moonvisor Tools. Melde dich in Windows an, dann installiert Moonvisor sie für dich.", .installTools)
         }
@@ -192,7 +262,7 @@ struct VMWindowContent: View {
 
     private func directXBanner(_ hint: (text: String, action: HintAction?)) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: entry.directXSetupRunning || entry.toolsInstallRequested ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle.fill")
+            Image(systemName: entry.directXSetupRunning ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle.fill")
                 .foregroundStyle(Moon.gold)
             Text(hint.text)
                 .font(.system(size: 12)).foregroundStyle(Moon.text)

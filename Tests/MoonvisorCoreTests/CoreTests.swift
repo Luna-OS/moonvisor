@@ -581,4 +581,23 @@ final class CoreTests: XCTestCase {
                                     profile: .gaming, installMode: .express, express: nil, graphics: .directX)
         XCTAssertEqual(directX.graphics, .directX)
     }
+
+    func testToolsCommandUsesTheLayoutMoonvisorSetInWindows() throws {
+        XCTAssertEqual(GuestKeyboard.layout(forWindowsLocale: "de-DE"), .german)
+        XCTAssertEqual(GuestKeyboard.layout(forWindowsLocale: "de-CH"), .swissGerman)
+        XCTAssertEqual(GuestKeyboard.layout(forWindowsLocale: "en-US"), .us)
+        XCTAssertNil(GuestKeyboard.layout(forWindowsLocale: "fr-FR"))
+        // Jede Belegung kann den ganzen Befehl tippen; „/“ liegt auf deutscher Tastatur auf Umschalt+7.
+        for layout in [GuestKeyboard.Layout.us, .german, .swissGerman] {
+            XCTAssertNoThrow(try GuestKeyboard.keystrokes(for: GuestKeyboard.installToolsCommand, layout: layout))
+        }
+        XCTAssertEqual(try GuestKeyboard.keystrokes(for: "/", layout: .german), [["shift", "7"]])
+    }
+
+    func testToolsInstallerShowsProgress() {
+        XCTAssertTrue(GuestTools.installScript.contains("Write-Progress"))
+        XCTAssertTrue(GuestTools.installScript.contains("param([switch]$Unattended)"))
+        // Beim ersten Anmelden ohne Wartezeit am Ende.
+        XCTAssertTrue(UnattendBuilder.guestSetupScript.contains("& $installer -Unattended"))
+    }
 }

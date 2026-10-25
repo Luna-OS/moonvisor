@@ -11,7 +11,7 @@ import Foundation
 ///                `xfer-begin <id> drop|clip`, `xfer-dir <id> <pfad>`, `xfer-file <id> <pfad> <größe>`,
 ///                `xfer-data <id> <daten>`, `xfer-end <id>`
 public enum GuestTools {
-    public static let version = 7
+    public static let version = 8
     public static let portName = "io.moonvisor.agent"
     public static let volumeName = "MOONTOOLS"
 
@@ -72,16 +72,31 @@ public enum GuestTools {
     /// Installiert Treiber (von der virtio-Treiber-CD) und den Agenten. Fordert bei Bedarf Adminrechte an.
     static let installScript = #"""
     # Moonvisor Tools – Installation
+    # -Unattended: beim ersten Anmelden nach der Windows-Installation (ohne Wartezeit am Ende).
+    param([switch]$Unattended)
     $ErrorActionPreference = 'Continue'
     $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        Write-Host 'Moonvisor Tools: Windows fragt jetzt nach Administratorrechten. Bitte auf „Ja“ klicken.'
         Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
         exit
     }
 
+    $Host.UI.RawUI.WindowTitle = 'Moonvisor Tools'
     $base = Join-Path $env:ProgramData 'Moonvisor'
     New-Item -ItemType Directory -Force -Path (Join-Path $base 'Tools') | Out-Null
     Start-Transcript -Path (Join-Path $base 'tools-install.log') -Append | Out-Null
+    $activity = 'Moonvisor Tools werden installiert'
+    # Fortschrittsbalken oben im Fenster und dieselbe Zeile im Fenster und im Protokoll.
+    function Show-Step([int]$percent, [string]$status) {
+        Write-Progress -Activity $activity -Status $status -PercentComplete $percent
+        Write-Host "  [$percent %] $status"
+    }
+    Write-Host ''
+    Write-Host '  Moonvisor Tools werden installiert. Das dauert ein bis zwei Minuten.' -ForegroundColor Cyan
+    Write-Host '  Bitte dieses Fenster nicht schließen.'
+    Write-Host ''
+    Show-Step 2 'Treiber werden gesucht'
 
     # DirectX-CD eingelegt und noch kein Grafiktreiber da (neue VM mit DirectX): gleich Triton einrichten. Den
     # einfachen Grafiktreiber später wieder zu entfernen braucht mehrere Neustarts und kann Windows durcheinanderbringen.
@@ -94,22 +109,30 @@ public enum GuestTools {
     if ($installTriton) { Write-Output 'Neue VM mit DirectX: Triton statt des einfachen Grafiktreibers.' }
 
     # ARM64-virtio-Treiber von der Treiber-CD
+    $infs = @()
     foreach ($root in (Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root })) {
         if (Test-Path (Join-Path $root 'NetKVM')) {
             Write-Output "Treiber-CD: $root"
             # Mit DirectX-Treiber (Triton) den einfachen Grafiktreiber nicht (wieder) installieren.
             $skipGpu = $tritonDone -or $installTriton
-            Get-ChildItem -Path $root -Directory | Where-Object { -not ($skipGpu -and $_.Name -eq 'viogpudo') } | ForEach-Object {
-                $dir = Join-Path $_.FullName 'w11\ARM64'
-                if (Test-Path $dir) {
-                    Get-ChildItem -Path $dir -Filter *.inf | ForEach-Object { pnputil.exe /add-driver $_.FullName /install }
-                }
+            foreach ($driver in (Get-ChildItem -Path $root -Directory | Where-Object { -not ($skipGpu -and $_.Name -eq 'viogpudo') })) {
+                $dir = Join-Path $driver.FullName 'w11\ARM64'
+                if (Test-Path $dir) { $infs += @(Get-ChildItem -Path $dir -Filter *.inf) }
             }
         }
+    }
+    if ($infs.Count -eq 0) { Write-Host '  Keine Treiber-CD gefunden, nur der Agent wird eingerichtet.' -ForegroundColor Yellow }
+    $driverLog = Join-Path $base 'tools-drivers.log'
+    $i = 0
+    foreach ($inf in $infs) {
+        $i++
+        Show-Step ([int](5 + 75 * $i / $infs.Count)) "Treiber $i von $($infs.Count): $($inf.Directory.Parent.Parent.Name)"
+        pnputil.exe /add-driver $inf.FullName /install | Out-File -Append -Encoding utf8 -FilePath $driverLog
     }
 
     # Agent installieren. Der virtio-serial-Port lässt sich nur mit Adminrechten öffnen, deshalb startet
     # eine geplante Aufgabe den Agenten bei jeder Anmeldung mit höchsten Rechten in der Benutzersitzung.
+    Show-Step 85 'Agent wird eingerichtet'
     $agent = Join-Path $base 'Tools\moon-agent.ps1'
     Copy-Item -Force (Join-Path $PSScriptRoot 'moon-agent.ps1') $agent
     Copy-Item -Force (Join-Path $PSScriptRoot 'version.txt') (Join-Path $base 'Tools\version.txt')
@@ -126,13 +149,22 @@ public enum GuestTools {
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
     if ($installTriton) {
         # Richtet Triton ein und startet Windows neu; den Agenten startet danach die Anmeldung.
+        Show-Step 95 'DirectX-Treiber wird eingerichtet, Windows startet danach neu'
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'setup-directx.ps1') -Phase 1
     } else {
+        Show-Step 95 'Agent wird gestartet'
         Start-Process conhost.exe -ArgumentList "--headless powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$agent`""
     }
 
+    Write-Progress -Activity $activity -Completed
+    Write-Host ''
+    Write-Host '  Fertig: Die Moonvisor Tools sind installiert. Moonvisor verbindet sich gleich mit ihnen.' -ForegroundColor Green
     Write-Output 'Moonvisor Tools installiert.'
     Stop-Transcript | Out-Null
+    if (-not $Unattended) {
+        Write-Host '  Dieses Fenster schließt sich in 10 Sekunden.'
+        Start-Sleep -Seconds 10
+    }
     """#
 
     /// Richtet den DirectX-Treiber Triton (viogpu3d) ein. Der einfache Treiber viogpudo lässt sich im laufenden
@@ -609,7 +641,7 @@ public enum GuestTools {
     '@
 
     $name = 'io.moonvisor.agent'
-    $version = 7
+    $version = 8
     $clipLimit = 256MB
     function Connect-Host {
         while (-not [MoonAgent]::Open($name)) { Start-Sleep -Seconds 5 }
