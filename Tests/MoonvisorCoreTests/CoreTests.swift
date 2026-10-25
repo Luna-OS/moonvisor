@@ -600,4 +600,12 @@ final class CoreTests: XCTestCase {
         // Beim ersten Anmelden ohne Wartezeit am Ende.
         XCTAssertTrue(UnattendBuilder.guestSetupScript.contains("& $installer -Unattended"))
     }
+
+    func testDiagnosticsTakesTheLastLines() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("diag-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try (1...100).map { "Zeile \($0)" }.joined(separator: "\n").appending("\n").write(to: url, atomically: true, encoding: .utf8)
+        XCTAssertEqual(Diagnostics.tail(of: url, lines: 3), "Zeile 98\nZeile 99\nZeile 100")
+        XCTAssertNil(Diagnostics.tail(of: url.appendingPathExtension("fehlt"), lines: 3))
+    }
 }

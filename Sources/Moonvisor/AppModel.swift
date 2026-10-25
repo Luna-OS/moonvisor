@@ -523,6 +523,18 @@ final class AppModel {
         if (entry.toolsVersion ?? 0) >= 6 { entry.agent?.send("report") }
     }
 
+    /// Legt die letzten Zeilen aller Protokolle in die Zwischenablage (zum Einfügen in einen Fehlerbericht).
+    func copyDiagnostics(_ entry: VMEntry) {
+        let text = Diagnostics.report(bundle: entry.bundle, config: entry.config, state: entry.state.displayName,
+                                      appVersion: AppUpdater.currentVersion)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        pasteboardCount = NSPasteboard.general.changeCount
+        // Für das nächste Mal einen frischen Windows-Bericht anfordern.
+        if (entry.toolsVersion ?? 0) >= 6 { entry.agent?.send("report") }
+        errorMessage = "Die Diagnose von „\(entry.config.name)“ ist in der Zwischenablage. Füge sie mit ⌘V in deine Nachricht ein."
+    }
+
     func shutdown(_ entry: VMEntry) {
         entry.state = .stopping
         entry.shutdownRequested = Date()
