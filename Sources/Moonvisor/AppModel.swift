@@ -107,6 +107,8 @@ final class AppModel {
     /// Eine Abfrage läuft noch: weitere Anstöße warten auf sie, statt sich in der Warteschlange zu stapeln.
     @ObservationIgnored private var refreshRunning = false
     @ObservationIgnored private var refreshAgain = false
+    /// Zuletzt protokollierte Zahl offener Dateien je QEMU-Prozess (nur auf `poller`).
+    @ObservationIgnored private var openFilesLogged: [Int32: Int] = [:]
     @ObservationIgnored private var pasteboardCount = NSPasteboard.general.changeCount
     @ObservationIgnored private var lastClipboardFromGuest: String?
     @ObservationIgnored private var lastFilesFromGuest: [URL] = []
@@ -200,6 +202,10 @@ final class AppModel {
                 if let info {
                     // Antwortet QMP gerade nicht, gilt der bisherige Zustand.
                     state = VMRunner.polledState(info) ?? (previous == .stopped ? .starting : previous)
+                    if captureThumbnails {
+                        self.openFilesLogged[info.qemuPID] = VMRunner.noteOpenFiles(
+                            bundle, pid: info.qemuPID, lastLogged: self.openFilesLogged[info.qemuPID] ?? 0)
+                    }
                 }
                 results.append((entry, state, info, previous))
             }
